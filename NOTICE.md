@@ -1,20 +1,11 @@
-# Design and source notice
+# LightHouse source notice
 
-LightHouse OS is licensed under the MIT License.
+LightHouse is implemented as one native Python package.
 
-The 0.2 agent runtime was implemented natively for this repository. No source
-code from Claude Code, OpenAI Codex, Aider, OpenHands or other external coding
-agents is vendored or copied.
+The built-in reasoning loop, capability routing, PostgreSQL state, Operation
+Kernel, executors, confirmation flow and Receipt recovery are all LightHouse
+components. No Codex, Claude Code or other third-party agent runtime is bundled
+or separately installed.
 
-Design references:
-
-- OpenAI Codex (`openai/codex`, Apache-2.0): project instruction files,
-  bounded context discovery and terminal-agent lifecycle concepts.
-- `CPYMSU/warehouse`: capability registry, operation confirmation, deterministic
-  executor, append-only event and durable receipt patterns.
-- `CPYMSU/MSU/neural-bus.js`: standardized event/signal naming and durable
-  experience-stream concept.
-
-The local/OpenSSH process execution implementation is original LightHouse code;
-its bounded output and receipt shape follow the operational lessons of
-`CPYMSU/warehouse/scripts/shieldctl.py`.
+Public agent projects and the user's Warehouse/MSU repositories were reviewed
+for architectural patterns only. Third-party source code is not vendored.
