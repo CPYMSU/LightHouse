@@ -7,7 +7,7 @@ from .agent_store import PostgresAgentStore
 from .brain import LightHouseBrain
 from .capabilities import CapabilityRegistry
 from .config import Settings
-from .executors import PostgresExecutor, SystemExecutor
+from .executors import DesktopExecutor, PostgresExecutor, SystemExecutor
 from .kernel import OperationKernel
 from .provider import DisabledProvider, OpenAICompatibleProvider
 from .repository import PostgresRepository
@@ -21,7 +21,15 @@ def build_kernel(settings: Settings, *, migrate: bool = True) -> OperationKernel
     repository = PostgresRepository(settings.database_url)
     if migrate:
         repository.migrate(migration_sql())
-    return OperationKernel(repository, CapabilityRegistry(), {"postgres": PostgresExecutor(), "system": SystemExecutor()})
+    return OperationKernel(
+        repository,
+        CapabilityRegistry(),
+        {
+            "postgres": PostgresExecutor(),
+            "system": SystemExecutor(),
+            "desktop": DesktopExecutor(),
+        },
+    )
 
 
 def build_brain(settings: Settings, kernel: OperationKernel) -> LightHouseBrain:
