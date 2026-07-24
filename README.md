@@ -4,8 +4,8 @@ LightHouse is one integrated PostgreSQL-first AI operating terminal with three
 governed execution surfaces:
 
 - **Data Kernel** — PostgreSQL and structured business data;
-- **System Kernel** — files, code, Git, tests, shell and Linux servers;
-- **Desktop Kernel** — semantic macOS application, browser and file launching.
+- **System Kernel** — files, code, Git, tests, local Bash/PowerShell and OpenSSH Linux servers;
+- **Desktop Kernel** — semantic macOS and Windows application, browser and file launching.
 
 Planning, context, action, observation, verification, memory and recovery are
 native LightHouse capabilities. Every side effect still passes through the
@@ -27,19 +27,50 @@ user intent
 curl -fsSL https://raw.githubusercontent.com/CPYMSU/LightHouse/main/install-macos.sh | bash
 ```
 
-The installer prepares Python 3.12, PostgreSQL 16 and Git, downloads the complete
-LightHouse package, asks for the model endpoint/name and a hidden API key, stores
-credentials in macOS Keychain, installs a `launchd` background service and the
-single `lh` command, then runs migrations and health checks.
+The macOS installer prepares Python 3.12, PostgreSQL 16 and Git, downloads the
+complete LightHouse package, stores credentials in macOS Keychain, installs a
+`launchd` background service and the single `lh` command, then runs migrations
+and health checks.
 
-No API key is written to the repository or `~/.lighthouse/config.json`.
+## Install on Windows PowerShell with one command
+
+Open Windows Terminal or PowerShell and run:
+
+```powershell
+irm https://raw.githubusercontent.com/CPYMSU/LightHouse/main/install-windows.ps1 | iex
+```
+
+The Windows installer:
+
+- installs Python 3.12, PostgreSQL 16 and Git through WinGet when missing;
+- creates the private local `lighthouse` PostgreSQL role and database;
+- installs LightHouse into `%USERPROFILE%\.lighthouse`;
+- protects control and model credentials with current-user Windows DPAPI;
+- adds `%USERPROFILE%\.lighthouse\bin\lh.cmd` to the user PATH;
+- registers a current-user `LightHouse` Scheduled Task at logon;
+- runs migrations, health checks and `lh doctor`.
+
+A fresh PostgreSQL installation is unattended. When an existing PostgreSQL
+installation has no LightHouse configuration, the installer asks for its
+`postgres` password. Model configuration can be supplied non-interactively with:
+
+```powershell
+$env:LIGHTHOUSE_MODEL_BASE_URL = "https://your-model-gateway.example/v1"
+$env:LIGHTHOUSE_MODEL = "lighthouse-default"
+$env:LIGHTHOUSE_MODEL_API_KEY = "your-lighthouse-token"
+irm https://raw.githubusercontent.com/CPYMSU/LightHouse/main/install-windows.ps1 | iex
+```
+
+No model API key is written to the repository or `config.json` on either
+platform.
 
 ## Swiss Super Terminal
 
 Open a project directory and run:
 
-```bash
-cd /path/to/your/project
+```text
+cd /path/to/project       # macOS
+cd C:\path\to\project    # Windows PowerShell
 lh
 ```
 
@@ -47,14 +78,14 @@ LightHouse automatically binds a confined local System Target and Desktop Target
 and selects `AUTO`, so one goal can cross both surfaces:
 
 ```text
-lh> 製作一個 Swiss 風格的 dashboard.html，然後在 Safari 打開
+lh> create a Swiss-style dashboard.html and open it in the default browser
 ```
 
 The governed chain is:
 
 ```text
 System Kernel: inspect project -> create/apply HTML change -> Receipt
-Desktop Kernel: resolve dashboard.html inside allowed root -> macOS open -> Receipt
+Desktop Kernel: resolve dashboard.html inside allowed root -> OS semantic open -> Receipt
 LightHouse Brain: verify both receipts -> final response
 ```
 
@@ -73,14 +104,19 @@ workspace, steps, confirmation cards and Receipts visible. During a run:
 
 A single task can also be sent directly:
 
-```bash
-lh "create an HTML dashboard and open it in Safari"
+```text
+lh "create an HTML dashboard and open it in the default browser"
 ```
 
-## Desktop Kernel 0.5
+## Desktop Kernel
 
-The first Desktop Kernel slice uses macOS Launch Services (`/usr/bin/open`) rather
-than brittle mouse coordinates. It exposes exact capabilities:
+The Desktop Kernel uses semantic operating-system launch services rather than
+brittle mouse coordinates:
+
+- macOS: `/usr/bin/open` and Launch Services;
+- Windows: PowerShell `Start-Process` and the Windows shell.
+
+It exposes exact capabilities:
 
 - `desktop.browser.open_url.v1`
 - `desktop.file.open.v1`
@@ -91,22 +127,23 @@ Opening an HTTP/HTTPS URL or a confined project file is a low-risk direct
 capability. Launching an allow-listed application creates an explicit
 confirmation Operation.
 
-Browser page interaction is intentionally not simulated with mouse coordinates
-in this slice. A future Playwright/CDP adapter can add semantic DOM navigation,
-form filling and downloads behind the same Capability → Operation → Receipt
-contract.
+Browser page interaction is intentionally not simulated with mouse coordinates.
+A future Playwright/CDP adapter can add semantic DOM navigation, form filling and
+downloads behind the same Capability → Operation → Receipt contract.
 
 ## Built-in capabilities
 
 ### System surface
 
-- local and OpenSSH Linux targets;
+- local macOS/Linux Bash and Windows PowerShell targets;
+- OpenSSH Linux targets from macOS, Linux or Windows hosts;
 - project instruction and context loading;
 - bounded file read and search;
 - unified diff application;
 - shell and configured test execution;
 - Git status, diff and explicit-path commit;
-- systemd status/restart and journal reads.
+- systemd status/restart and journal reads on Linux;
+- Windows Service status/restart and filtered Event Log reads on Windows.
 
 ### Data surface
 
@@ -124,18 +161,15 @@ database or desktop authority.
 
 ## Useful commands
 
-```bash
+```text
 lh                              # Swiss interactive terminal
 lh "task"                       # one natural-language task
 lh init [PATH]                  # bind System + Desktop targets
-lh login                        # replace the model key in macOS Keychain
+lh login                        # replace the model key in the native secret store
 lh doctor                       # verify installation
 lh capabilities                 # inspect all active capabilities
 lh capabilities --kernel desktop
 lh mode auto|data|system|desktop
-lh run desktop.browser.open_url.v1 \
-  --mode desktop \
-  --args-json '{"url":"https://example.com","browser":"Safari"}'
 ```
 
 Interactive controls include:
@@ -164,14 +198,17 @@ LightHouse reads bounded project guidance from:
 ## Security model
 
 - The HTTP service binds to `127.0.0.1` by default.
-- API keys are stored in macOS Keychain.
+- Secrets are stored in macOS Keychain or current-user Windows DPAPI.
 - High-risk writes freeze an exact Operation before confirmation.
 - Receipts, not client timeouts, are the source of execution truth.
 - Local System and Desktop targets are confined to explicit allowed roots.
 - Desktop URL schemes and applications are allow-listed per target.
 - SSH host-key checking remains strict by default.
+- Windows background execution uses a current-user Scheduled Task with limited privileges.
 
 ## Upgrade an existing installation
+
+### macOS
 
 ```bash
 git -C ~/.lighthouse/app fetch origin main
@@ -181,8 +218,22 @@ launchctl kickstart -k gui/$(id -u)/com.cpym.su.lighthouse
 lh migrate
 ```
 
-Then enter the project and run `lh`; LightHouse creates its Desktop Target and
-switches the local workspace to `AUTO`.
+### Windows PowerShell
+
+The installer is idempotent and also performs upgrades:
+
+```powershell
+irm https://raw.githubusercontent.com/CPYMSU/LightHouse/main/install-windows.ps1 | iex
+```
+
+To remove LightHouse while leaving PostgreSQL and its databases untouched:
+
+```powershell
+irm https://raw.githubusercontent.com/CPYMSU/LightHouse/main/uninstall-windows.ps1 | iex
+```
+
+Then enter a project and run `lh`; LightHouse creates the platform-native System
+and Desktop Targets and switches the local workspace to `AUTO`.
 
 See `docs/ARCHITECTURE.md`, `docs/AGENT_RUNTIME.md`, `docs/TERMINAL_UI.md` and
 `docs/DESKTOP_KERNEL.md` for internal contracts.
