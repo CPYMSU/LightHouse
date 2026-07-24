@@ -165,6 +165,120 @@ CREATE TABLE IF NOT EXISTS lh_semantic_commands (
 );
 CREATE INDEX IF NOT EXISTS idx_lh_semantic_commands_target ON lh_semantic_commands(target_id,active,command_name);
 
+CREATE TABLE IF NOT EXISTS lh_conversations (
+  id UUID PRIMARY KEY,
+  workspace_id UUID NOT NULL REFERENCES lh_workspaces(id) ON DELETE CASCADE,
+  actor TEXT NOT NULL,
+  title TEXT,
+  status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active','archived')),
+  active_task_id UUID,
+  active_subject_kind TEXT,
+  active_subject_value TEXT,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  last_message_at TIMESTAMPTZ
+);
+CREATE INDEX IF NOT EXISTS idx_lh_conversations_workspace_actor ON lh_conversations(workspace_id,actor,updated_at DESC);
+
+CREATE TABLE IF NOT EXISTS lh_run_conversations (
+  run_id UUID PRIMARY KEY REFERENCES lh_agent_runs(id) ON DELETE CASCADE,
+  conversation_id UUID NOT NULL REFERENCES lh_conversations(id) ON DELETE CASCADE,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_lh_run_conversations_conversation ON lh_run_conversations(conversation_id,created_at DESC);
+
+CREATE TABLE IF NOT EXISTS lh_messages (
+  id BIGSERIAL PRIMARY KEY,
+  conversation_id UUID NOT NULL REFERENCES lh_conversations(id) ON DELETE CASCADE,
+  run_id UUID REFERENCES lh_agent_runs(id) ON DELETE SET NULL,
+  role TEXT NOT NULL CHECK (role IN ('user','assistant','system')),
+  content TEXT NOT NULL,
+  metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
+  search_vector TSVECTOR GENERATED ALWAYS AS (to_tsvector('simple',coalesce(content,''))) STORED,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_lh_messages_conversation ON lh_messages(conversation_id,id DESC);
+CREATE INDEX IF NOT EXISTS idx_lh_messages_search ON lh_messages USING GIN(search_vector);
+
+CREATE TABLE IF NOT EXISTS lh_locators (
+  id UUID PRIMARY KEY,
+  workspace_id UUID NOT NULL REFERENCES lh_workspaces(id) ON DELETE CASCADE,
+  kind TEXT NOT NULL CHECK (kind IN ('file','directory','url','app','data')),
+  canonical_value TEXT NOT NULL,
+  display_value TEXT NOT NULL,
+  label TEXT,
+  metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
+  last_used_at TIMESTAMPTZ,
+  use_count BIGINT NOT NULL DEFAULT 0,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  UNIQUE(workspace_id,kind,canonical_value)
+);
+CREATE INDEX IF NOT EXISTS idx_lh_locators_recent ON lh_locators(workspace_id,last_used_at DESC NULLS LAST,use_count DESC);
+
+CREATE TABLE IF NOT EXISTS lh_memory_tasks (
+  id UUID PRIMARY KEY,
+  workspace_id UUID NOT NULL REFERENCES lh_workspaces(id) ON DELETE CASCADE,
+  conversation_id UUID NOT NULL REFERENCES lh_conversations(id) ON DELETE CASCADE,
+  actor TEXT NOT NULL,
+  goal TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active','waiting','completed','failed','cancelled')),
+  subject_locator_id UUID REFERENCES lh_locators(id) ON DELETE SET NULL,
+  summary TEXT,
+  last_run_id UUID REFERENCES lh_agent_runs(id) ON DELETE SET NULL,
+  search_vector TSVECTOR GENERATED ALWAYS AS (to_tsvector('simple',coalesce(goal,'') || ' ' || coalesce(summary,''))) STORED,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_lh_memory_tasks_recent ON lh_memory_tasks(workspace_id,actor,updated_at DESC);
+CREATE INDEX IF NOT EXISTS idx_lh_memory_tasks_search ON lh_memory_tasks USING GIN(search_vector);
+DO $$ BEGIN
+  ALTER TABLE lh_conversations ADD CONSTRAINT lh_conversations_active_task_fk
+    FOREIGN KEY (active_task_id) REFERENCES lh_memory_tasks(id) ON DELETE SET NULL;
+EXCEPTION WHEN duplicate_object THEN NULL;
+END $$;
+
+CREATE TABLE IF NOT EXISTS lh_files (
+  id UUID PRIMARY KEY,
+  workspace_id UUID NOT NULL REFERENCES lh_workspaces(id) ON DELETE CASCADE,
+  locator_id UUID REFERENCES lh_locators(id) ON DELETE SET NULL,
+  canonical_path TEXT NOT NULL,
+  relative_path TEXT,
+  name TEXT NOT NULL,
+  extension TEXT NOT NULL DEFAULT '',
+  mime_type TEXT NOT NULL DEFAULT 'application/octet-stream',
+  size_bytes BIGINT NOT NULL DEFAULT 0,
+  modified_at TIMESTAMPTZ,
+  content_hash CHAR(64),
+  summary TEXT,
+  keywords JSONB NOT NULL DEFAULT '[]'::jsonb,
+  search_text TEXT NOT NULL DEFAULT '',
+  search_vector TSVECTOR GENERATED ALWAYS AS (
+    to_tsvector('simple',coalesce(name,'') || ' ' || coalesce(canonical_path,'') || ' ' || coalesce(summary,'') || ' ' || coalesce(search_text,''))
+  ) STORED,
+  active BOOLEAN NOT NULL DEFAULT TRUE,
+  last_seen_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  last_opened_at TIMESTAMPTZ,
+  last_modified_run_id UUID REFERENCES lh_agent_runs(id) ON DELETE SET NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  UNIQUE(workspace_id,canonical_path)
+);
+CREATE INDEX IF NOT EXISTS idx_lh_files_recent ON lh_files(workspace_id,last_opened_at DESC NULLS LAST,last_seen_at DESC);
+CREATE INDEX IF NOT EXISTS idx_lh_files_search ON lh_files USING GIN(search_vector);
+
+CREATE TABLE IF NOT EXISTS lh_file_revisions (
+  id BIGSERIAL PRIMARY KEY,
+  file_id UUID NOT NULL REFERENCES lh_files(id) ON DELETE CASCADE,
+  run_id UUID REFERENCES lh_agent_runs(id) ON DELETE SET NULL,
+  operation_id UUID REFERENCES lh_operations(id) ON DELETE SET NULL,
+  content_hash CHAR(64) NOT NULL,
+  size_bytes BIGINT NOT NULL,
+  modified_at TIMESTAMPTZ,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  UNIQUE(file_id,content_hash)
+);
+
 CREATE TABLE IF NOT EXISTS lh_index_nodes (
   id UUID PRIMARY KEY,
   workspace_id UUID REFERENCES lh_workspaces(id) ON DELETE CASCADE,

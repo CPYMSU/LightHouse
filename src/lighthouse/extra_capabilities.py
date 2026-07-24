@@ -27,3 +27,27 @@ PROJECT_FILE_WRITE_CAPABILITY = Capability(
         "overwrite": {"type": "boolean", "required": False},
     },
 )
+
+
+DIRECTORY_CREATE_CAPABILITY = Capability(
+    tool_name="system.directory.create.v1",
+    command="directory create",
+    description="Create one confined project directory without invoking an interactive shell",
+    kernel=KernelMode.SYSTEM,
+    executor="project_file",
+    operation="directory_create",
+    risk=Risk.NORMAL,
+    confirmation=ConfirmationMode.EXPLICIT,
+    writes=True,
+    aliases=("mkdir", "create directory", "create folder", "建立目錄", "創建文件夾"),
+    arguments={
+        "path": {"type": "string", "required": True},
+        "parents": {"type": "boolean", "required": False},
+    },
+)
+
+
+SYSTEM_TYPED_CAPABILITIES = (
+    PROJECT_FILE_WRITE_CAPABILITY,
+    DIRECTORY_CREATE_CAPABILITY,
+)

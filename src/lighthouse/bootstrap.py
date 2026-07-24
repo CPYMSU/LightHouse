@@ -10,14 +10,19 @@ from .config import Settings
 from .data_capabilities import DATA_KERNEL_CAPABILITIES
 from .data_kernel import DataTargetResolver, PostgresDataCatalog
 from .executors import DesktopExecutor, PostgresExecutor, ProjectFileExecutor, SystemExecutor
-from .extra_capabilities import PROJECT_FILE_WRITE_CAPABILITY
+from .extra_capabilities import SYSTEM_TYPED_CAPABILITIES
 from .kernel import OperationKernel
+from .memory import PostgresMemoryFabric
 from .provider import DisabledProvider, OpenAICompatibleProvider
 from .repository import PostgresRepository
 
 
 def migration_sql() -> str:
-    return files("lighthouse.sql").joinpath("0001_core.sql").read_text(encoding="utf-8")
+    root = files("lighthouse.sql")
+    return "\n".join(
+        root.joinpath(name).read_text(encoding="utf-8")
+        for name in ("0001_core.sql", "0002_memory_runtime.sql")
+    )
 
 
 def build_kernel(settings: Settings, *, migrate: bool = True) -> OperationKernel:
@@ -25,7 +30,7 @@ def build_kernel(settings: Settings, *, migrate: bool = True) -> OperationKernel
     if migrate:
         repository.migrate(migration_sql())
     catalog = PostgresDataCatalog(settings.database_url)
-    registry = CapabilityRegistry((*DEFAULT_CAPABILITIES, PROJECT_FILE_WRITE_CAPABILITY, *DATA_KERNEL_CAPABILITIES))
+    registry = CapabilityRegistry((*DEFAULT_CAPABILITIES, *SYSTEM_TYPED_CAPABILITIES, *DATA_KERNEL_CAPABILITIES))
     return OperationKernel(
         repository,
         registry,
@@ -53,7 +58,8 @@ def build_brain(settings: Settings, kernel: OperationKernel) -> LightHouseBrain:
     else:
         provider = DisabledProvider()
     state_repository = AgentRepositoryAdapter(PostgresAgentStore(settings.database_url), kernel.repository)
-    return LightHouseBrain(state_repository, kernel, provider)
+    memory = PostgresMemoryFabric(settings.database_url)
+    return LightHouseBrain(state_repository, kernel, provider, memory=memory)
 
 
 build_agent_runtime = build_brain

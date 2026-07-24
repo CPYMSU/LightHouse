@@ -25,22 +25,11 @@ class AgentDecision:
     message: str | None = None
 
     def public_dict(self) -> dict[str, Any]:
-        return {
-            "kind": self.kind,
-            "reason": self.reason,
-            "capability": self.capability,
-            "arguments": self.arguments,
-            "message": self.message,
-        }
+        return {"kind": self.kind, "reason": self.reason, "capability": self.capability, "arguments": self.arguments, "message": self.message}
 
 
 class AgentProvider(Protocol):
-    def decide(
-        self,
-        *,
-        system_prompt: str,
-        state: dict[str, Any],
-    ) -> AgentDecision: ...
+    def decide(self, *, system_prompt: str, state: dict[str, Any]) -> AgentDecision: ...
 
 
 def parse_decision(value: Any) -> AgentDecision:
@@ -55,12 +44,7 @@ def parse_decision(value: Any) -> AgentDecision:
             raise AgentProtocolError("tool decision requires capability")
         if not isinstance(arguments, dict):
             raise AgentProtocolError("tool decision arguments must be an object")
-        return AgentDecision(
-            kind=kind,
-            reason=reason,
-            capability=capability,
-            arguments=arguments,
-        )
+        return AgentDecision(kind=kind, reason=reason, capability=capability, arguments=arguments)
     if kind in {"final", "ask"}:
         message = str(value.get("message") or "").strip()
         if not message:
@@ -90,26 +74,13 @@ def _strip_fence(text: str) -> str:
 
 class DisabledProvider:
     def decide(self, *, system_prompt: str, state: dict[str, Any]) -> AgentDecision:
-        raise ModelNotConfiguredError(
-            "AI model is not configured; set LIGHTHOUSE_MODEL, "
-            "LIGHTHOUSE_MODEL_BASE_URL and LIGHTHOUSE_MODEL_API_KEY"
-        )
+        raise ModelNotConfiguredError("AI model is not configured; set LIGHTHOUSE_MODEL, LIGHTHOUSE_MODEL_BASE_URL and LIGHTHOUSE_MODEL_API_KEY")
 
 
 class OpenAICompatibleProvider:
     """Small provider adapter for Chat-Completions-compatible model APIs."""
 
-    def __init__(
-        self,
-        *,
-        base_url: str,
-        api_key: str,
-        model: str,
-        timeout: int = 120,
-        json_mode: bool = True,
-        max_state_chars: int = 120_000,
-        client: httpx.Client | None = None,
-    ):
+    def __init__(self, *, base_url: str, api_key: str, model: str, timeout: int = 120, json_mode: bool = True, max_state_chars: int = 120_000, client: httpx.Client | None = None):
         if not base_url or not model or not api_key:
             raise ModelNotConfiguredError("model base URL, model and API key are required")
         base = base_url.rstrip("/")
@@ -117,56 +88,25 @@ class OpenAICompatibleProvider:
         self.model = model
         self.json_mode = bool(json_mode)
         self.max_state_chars = max(10_000, int(max_state_chars))
-        self.client = client or httpx.Client(
-            timeout=timeout,
-            follow_redirects=False,
-            headers={
-                "Authorization": "Bearer " + api_key,
-                "Content-Type": "application/json",
-            },
-        )
+        self.client = client or httpx.Client(timeout=timeout, follow_redirects=False, headers={"Authorization": "Bearer " + api_key, "Content-Type": "application/json"})
 
-    def decide(
-        self,
-        *,
-        system_prompt: str,
-        state: dict[str, Any],
-    ) -> AgentDecision:
-        state_text = json.dumps(
-            state,
-            ensure_ascii=False,
-            allow_nan=False,
-            sort_keys=True,
-            separators=(",", ":"),
-        )
+    def decide(self, *, system_prompt: str, state: dict[str, Any]) -> AgentDecision:
+        state_text = json.dumps(state, ensure_ascii=False, allow_nan=False, sort_keys=True, separators=(",", ":"), default=str)
         if len(state_text) > self.max_state_chars:
-            state_text = (
-                '{"context_truncated":true,"tail":'
-                + json.dumps(state_text[-self.max_state_chars :], ensure_ascii=False)
-                + "}"
-            )
+            state_text = '{"context_truncated":true,"tail":' + json.dumps(state_text[-self.max_state_chars :], ensure_ascii=False) + "}"
         payload: dict[str, Any] = {
             "model": self.model,
             "temperature": 0,
             "messages": [
                 {"role": "system", "content": system_prompt},
-                {
-                    "role": "user",
-                    "content": (
-                        "Continue the LightHouse run from this durable state. "
-                        "Return exactly one decision object.\n" + state_text
-                    ),
-                },
+                {"role": "user", "content": "Continue the LightHouse run from this durable state. Return exactly one decision object.\n" + state_text},
             ],
         }
         if self.json_mode:
             payload["response_format"] = {"type": "json_object"}
         response = self.client.post(self.endpoint, json=payload)
         if response.is_error:
-            body = response.text[:4000]
-            raise RuntimeError(
-                f"model request failed with HTTP {response.status_code}: {body}"
-            )
+            raise RuntimeError(f"model request failed with HTTP {response.status_code}: {response.text[:4000]}")
         data = response.json()
         try:
             message = data["choices"][0]["message"]
