@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from pathlib import PureWindowsPath
 import re
 from typing import Any
 
@@ -7,21 +8,61 @@ from .models import TargetKind
 
 _ENV = re.compile(r"^[A-Z_][A-Z0-9_]{0,127}$")
 _HOST = re.compile(r"^[A-Za-z0-9._:-]{1,255}$")
-_APP = re.compile(r"^[^/\x00\r\n]{1,160}$")
+_APP = re.compile(r"^[^/\\\x00\r\n]{1,160}$")
 _SCHEMA = re.compile(r"^[A-Za-z_][A-Za-z0-9_$]{0,62}$")
-_DATA_KEYS = {"dsn_env", "read_only", "allowed_schemas", "excluded_schemas", "raw_sql_query", "raw_sql_exec", "max_rows"}
-_SYSTEM_KEYS = {"transport", "host", "port", "user", "identity_file_env", "known_hosts_env", "strict_host_key", "default_cwd", "shell", "timeout", "max_output_chars", "allowed_roots", "project_instruction_files", "test_command"}
-_DESKTOP_KEYS = {"platform", "default_cwd", "allowed_roots", "allowed_apps", "allowed_schemes", "browser"}
+_PLATFORMS = {"linux", "macos", "windows"}
+_DATA_KEYS = {
+    "dsn_env", "read_only", "allowed_schemas", "excluded_schemas",
+    "raw_sql_query", "raw_sql_exec", "max_rows",
+}
+_SYSTEM_KEYS = {
+    "transport", "platform", "host", "port", "user", "identity_file_env",
+    "known_hosts_env", "strict_host_key", "default_cwd", "shell", "timeout",
+    "max_output_chars", "allowed_roots", "project_instruction_files", "test_command",
+}
+_DESKTOP_KEYS = {
+    "platform", "default_cwd", "allowed_roots", "allowed_apps",
+    "allowed_schemes", "browser",
+}
 
 
-def _absolute_path(value: Any, field: str) -> str:
+def _platform(value: Any, *, default: str) -> str:
+    item = str(value or default).strip().lower()
+    if item not in _PLATFORMS:
+        raise ValueError("platform must be linux, macos or windows")
+    return item
+
+
+def _absolute_path(value: Any, field: str, *, platform: str) -> str:
     item = str(value or "").strip()
-    if not item.startswith("/") or "\x00" in item:
+    if not item or "\x00" in item:
+        raise ValueError(f"{field} must be an absolute path")
+    if platform == "windows":
+        if not PureWindowsPath(item).is_absolute():
+            raise ValueError(f"{field} must be an absolute Windows path")
+    elif not item.startswith("/"):
         raise ValueError(f"{field} must be an absolute path")
     return item
 
 
-def _string_array(value: Any, field: str, *, pattern: re.Pattern[str] | None = None, allow_empty: bool = False) -> list[str]:
+def _shell(value: Any, *, platform: str) -> str:
+    item = str(value or "").strip()
+    if not item or "\x00" in item or "\r" in item or "\n" in item:
+        raise ValueError("shell is invalid")
+    if platform == "windows":
+        if "/" in item or "\\" in item:
+            _absolute_path(item, "shell", platform=platform)
+        return item
+    return _absolute_path(item, "shell", platform=platform)
+
+
+def _string_array(
+    value: Any,
+    field: str,
+    *,
+    pattern: re.Pattern[str] | None = None,
+    allow_empty: bool = False,
+) -> list[str]:
     if value is None and allow_empty:
         return []
     if not isinstance(value, list) or (not value and not allow_empty):
@@ -51,9 +92,15 @@ def validate_target_config(kind: TargetKind, value: dict[str, Any]) -> dict[str,
         read_only = bool(config.get("read_only", False))
         config["dsn_env"] = env_name
         config["read_only"] = read_only
-        config["allowed_schemas"] = _string_array(config.get("allowed_schemas"), "allowed_schemas", pattern=_SCHEMA, allow_empty=True)
+        config["allowed_schemas"] = _string_array(
+            config.get("allowed_schemas"), "allowed_schemas", pattern=_SCHEMA, allow_empty=True
+        )
         excluded = config.get("excluded_schemas")
-        config["excluded_schemas"] = _string_array(excluded, "excluded_schemas", pattern=_SCHEMA, allow_empty=True) if excluded is not None else ["pg_catalog", "information_schema"]
+        config["excluded_schemas"] = (
+            _string_array(excluded, "excluded_schemas", pattern=_SCHEMA, allow_empty=True)
+            if excluded is not None
+            else ["pg_catalog", "information_schema"]
+        )
         config["raw_sql_query"] = bool(config.get("raw_sql_query", True))
         config["raw_sql_exec"] = bool(config.get("raw_sql_exec", not read_only)) and not read_only
         max_rows = int(config.get("max_rows") or 5000)
@@ -63,14 +110,23 @@ def validate_target_config(kind: TargetKind, value: dict[str, Any]) -> dict[str,
         return config
 
     if kind == TargetKind.DESKTOP:
-        platform = str(config.get("platform") or "macos").strip().lower()
-        if platform != "macos":
-            raise ValueError("desktop target platform must be macos")
+        platform = _platform(config.get("platform"), default="macos")
+        if platform not in {"macos", "windows"}:
+            raise ValueError("desktop target platform must be macos or windows")
         config["platform"] = platform
-        config["default_cwd"] = _absolute_path(config.get("default_cwd") or "/", "default_cwd")
+        default_cwd = config.get("default_cwd") or ("C:\\" if platform == "windows" else "/")
+        config["default_cwd"] = _absolute_path(default_cwd, "default_cwd", platform=platform)
         roots = config.get("allowed_roots") or [config["default_cwd"]]
-        config["allowed_roots"] = [_absolute_path(item, "allowed_roots item") for item in _string_array(roots, "allowed_roots")]
-        apps = config.get("allowed_apps") or ["Safari", "Google Chrome", "Firefox", "Arc", "Finder"]
+        config["allowed_roots"] = [
+            _absolute_path(item, "allowed_roots item", platform=platform)
+            for item in _string_array(roots, "allowed_roots")
+        ]
+        default_apps = (
+            ["explorer.exe", "msedge.exe", "chrome.exe", "firefox.exe", "notepad.exe", "code.exe"]
+            if platform == "windows"
+            else ["Safari", "Google Chrome", "Firefox", "Arc", "Finder"]
+        )
+        apps = config.get("allowed_apps") or default_apps
         config["allowed_apps"] = _string_array(apps, "allowed_apps", pattern=_APP)
         schemes = config.get("allowed_schemes") or ["http", "https", "file"]
         normalized = [str(item).strip().lower() for item in _string_array(schemes, "allowed_schemes")]
@@ -87,6 +143,11 @@ def validate_target_config(kind: TargetKind, value: dict[str, Any]) -> dict[str,
     if transport not in {"local", "ssh"}:
         raise ValueError("system target transport must be local or ssh")
     config["transport"] = transport
+    platform = _platform(config.get("platform"), default="linux")
+    if transport == "ssh" and platform != "linux":
+        raise ValueError("OpenSSH System Targets currently require platform=linux")
+    config["platform"] = platform
+
     if transport == "ssh":
         host = str(config.get("host") or "").strip()
         user = str(config.get("user") or "").strip()
@@ -105,12 +166,12 @@ def validate_target_config(kind: TargetKind, value: dict[str, Any]) -> dict[str,
             if env_name:
                 config[field] = env_name
         config["strict_host_key"] = bool(config.get("strict_host_key", True))
-    if "default_cwd" in config:
-        config["default_cwd"] = _absolute_path(config["default_cwd"], "default_cwd")
-    if "shell" in config:
-        config["shell"] = _absolute_path(config["shell"], "shell")
-    config.setdefault("shell", "/bin/bash")
-    config.setdefault("default_cwd", "/")
+
+    default_cwd = config.get("default_cwd") or ("C:\\" if platform == "windows" else "/")
+    config["default_cwd"] = _absolute_path(default_cwd, "default_cwd", platform=platform)
+    default_shell = "powershell.exe" if platform == "windows" else "/bin/bash"
+    config["shell"] = _shell(config.get("shell") or default_shell, platform=platform)
+
     timeout = int(config.get("timeout") or 600)
     if not 1 <= timeout <= 3600:
         raise ValueError("timeout must be between 1 and 3600 seconds")
@@ -120,8 +181,13 @@ def validate_target_config(kind: TargetKind, value: dict[str, Any]) -> dict[str,
         raise ValueError("max_output_chars must be between 4096 and 2000000")
     config["max_output_chars"] = max_output_chars
     roots = config.get("allowed_roots") or [config["default_cwd"]]
-    config["allowed_roots"] = [_absolute_path(item, "allowed_roots item") for item in _string_array(roots, "allowed_roots")]
-    instruction_files = config.get("project_instruction_files") or ["AGENTS.md", "AGENTS.override.md", "LIGHTHOUSE.md", ".lighthouse/project.yaml"]
+    config["allowed_roots"] = [
+        _absolute_path(item, "allowed_roots item", platform=platform)
+        for item in _string_array(roots, "allowed_roots")
+    ]
+    instruction_files = config.get("project_instruction_files") or [
+        "AGENTS.md", "AGENTS.override.md", "LIGHTHOUSE.md", ".lighthouse/project.yaml"
+    ]
     if not isinstance(instruction_files, list):
         raise ValueError("project_instruction_files must be an array")
     normalized_files = []
