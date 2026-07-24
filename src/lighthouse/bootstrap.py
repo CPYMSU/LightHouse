@@ -7,6 +7,8 @@ from .agent_store import PostgresAgentStore
 from .brain import LightHouseBrain
 from .capabilities import CapabilityRegistry, DEFAULT_CAPABILITIES
 from .config import Settings
+from .data_capabilities import DATA_KERNEL_CAPABILITIES
+from .data_kernel import DataTargetResolver, PostgresDataCatalog
 from .executors import DesktopExecutor, PostgresExecutor, ProjectFileExecutor, SystemExecutor
 from .extra_capabilities import PROJECT_FILE_WRITE_CAPABILITY
 from .kernel import OperationKernel
@@ -22,16 +24,19 @@ def build_kernel(settings: Settings, *, migrate: bool = True) -> OperationKernel
     repository = PostgresRepository(settings.database_url)
     if migrate:
         repository.migrate(migration_sql())
-    registry = CapabilityRegistry((*DEFAULT_CAPABILITIES, PROJECT_FILE_WRITE_CAPABILITY))
+    catalog = PostgresDataCatalog(settings.database_url)
+    registry = CapabilityRegistry((*DEFAULT_CAPABILITIES, PROJECT_FILE_WRITE_CAPABILITY, *DATA_KERNEL_CAPABILITIES))
     return OperationKernel(
         repository,
         registry,
         {
-            "postgres": PostgresExecutor(),
+            "postgres": PostgresExecutor(catalog),
             "system": SystemExecutor(),
             "project_file": ProjectFileExecutor(),
             "desktop": DesktopExecutor(),
         },
+        target_resolver=DataTargetResolver(catalog),
+        data_catalog=catalog,
     )
 
 
