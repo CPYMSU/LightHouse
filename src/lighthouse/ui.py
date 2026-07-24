@@ -37,23 +37,17 @@ AMBER = "yellow3"
 CYAN = "cyan3"
 
 _LOCAL_COMMANDS = (
-    "/help",
-    "/status",
-    "/capabilities",
-    "/mode auto",
-    "/mode system",
-    "/mode data",
-    "/init",
-    "/doctor",
-    "/login",
-    "/clear",
-    "/exit",
+    "/help", "/status", "/capabilities", "/mode auto", "/mode system",
+    "/mode data", "/mode desktop", "/new", "/reindex", "/init", "/doctor",
+    "/login", "/clear", "/exit",
 )
 
 _STAGE = {
     "run_created": ("PLAN", "01", INK_2),
     "project_context": ("CONTEXT", "02", CYAN),
     "decision": ("THINK", "03", PAPER),
+    "address_grounded": ("ADDRESS", "03", CYAN),
+    "address_rejected": ("ADDRESS", "!", RED),
     "operation_dispatched": ("EXECUTE", "04", RED),
     "auto_confirmation": ("CONFIRM", "05", AMBER),
     "observation": ("VERIFY", "06", GREEN),
@@ -71,7 +65,11 @@ def _text(value: Any, style: str | None = None, *, max_chars: int | None = None)
     string = "—" if value is None or value == "" else str(value)
     if max_chars and len(string) > max_chars:
         string = string[: max_chars - 1] + "…"
-    return Text(string, style=style or "")
+    return Text(string, style=style or "", overflow="fold", no_wrap=False)
+
+
+def _message_text(value: Any, style: str = PAPER) -> Text:
+    return Text(str(value if value is not None else "—"), style=style, overflow="fold", no_wrap=False)
 
 
 def _short(value: Any, limit: int = 180) -> str:
@@ -81,7 +79,7 @@ def _short(value: Any, limit: int = 180) -> str:
         text = value
     else:
         try:
-            text = json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+            text = json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"), default=str)
         except (TypeError, ValueError):
             text = str(value)
     text = " ".join(text.split())
@@ -89,25 +87,16 @@ def _short(value: Any, limit: int = 180) -> str:
 
 
 def _step_key(step: dict[str, Any], index: int) -> tuple[Any, ...]:
-    return (
-        step.get("sequence"),
-        step.get("id"),
-        step.get("kind"),
-        step.get("created_at"),
-        index,
-    )
+    return (step.get("sequence"), step.get("id"), step.get("kind"), step.get("created_at"), index)
 
 
 class SwissTerminal:
-    """Warehouse-inspired Swiss terminal presentation layer.
-
-    The palette follows the Warehouse 2.0 paper/ink/red discipline. This class
-    never grants authority or mutates operations; it renders immutable runtime
-    state and collects explicit user input.
-    """
+    """Warehouse-inspired Swiss terminal presentation layer."""
 
     def __init__(self, console: Console | None = None):
-        self.console = console or Console(highlight=False, soft_wrap=True)
+        # Global soft_wrap truncates one long logical line. Authoritative cards
+        # explicitly fold instead, so their last character remains visible.
+        self.console = console or Console(highlight=False, soft_wrap=False)
 
     @property
     def width(self) -> int:
@@ -117,16 +106,7 @@ class SwissTerminal:
         if self.console.is_terminal:
             self.console.clear()
 
-    def masthead(
-        self,
-        *,
-        mode: str = "SYSTEM",
-        workspace: str | None = None,
-        project: str | None = None,
-        brain: str = "READY",
-        control: str = "LOCAL / SECURE",
-        version: str = "0.4",
-    ) -> None:
+    def masthead(self, *, mode: str = "SYSTEM", workspace: str | None = None, project: str | None = None, brain: str = "READY", control: str = "LOCAL / SECURE", version: str = "0.7") -> None:
         top = Table.grid(expand=True)
         top.add_column(ratio=1)
         top.add_column(justify="right")
@@ -134,11 +114,9 @@ class SwissTerminal:
         brand.append("LH", style=f"bold {RED}")
         brand.append("  /  ", style=INK_4)
         brand.append("LIGHTHOUSE OS", style=f"bold {PAPER}")
-        folio = Text(f"FOLIO {version}  ·  AI OPERATING TERMINAL", style=INK_3)
-        top.add_row(brand, folio)
+        top.add_row(brand, Text(f"FOLIO {version}  ·  AI OPERATING TERMINAL", style=INK_3))
         self.console.print(top)
         self.console.print(Rule(style=RED, characters="━"))
-
         status = Table.grid(expand=True, padding=(0, 2))
         for _ in range(4):
             status.add_column(ratio=1)
@@ -148,12 +126,8 @@ class SwissTerminal:
             ("BRAIN", str(brain or "ready").upper(), GREEN if brain == "READY" else AMBER),
             ("CONTROL", str(control or "local / secure").upper(), CYAN),
         )
-        cells: list[Group] = []
-        for label, value, color in values:
-            cells.append(Group(Text(label, style=f"bold {INK_4}"), Text(value, style=f"bold {color}")))
-        status.add_row(*cells)
+        status.add_row(*[Group(Text(label, style=f"bold {INK_4}"), Text(value, style=f"bold {color}")) for label, value, color in values])
         self.console.print(status)
-
         project_line = Text()
         project_line.append("PROJECT  ", style=f"bold {INK_4}")
         project_line.append(str(project or os.getcwd()), style=INK_2)
@@ -163,22 +137,14 @@ class SwissTerminal:
     @staticmethod
     def _compact_id(value: str, limit: int = 24) -> str:
         value = str(value or "")
-        if len(value) <= limit:
-            return value
-        return value[:10] + "…" + value[-8:]
+        return value if len(value) <= limit else value[:10] + "…" + value[-8:]
 
     def guide(self) -> None:
         table = Table.grid(expand=True, padding=(0, 2))
         table.add_column(ratio=1)
         table.add_column(ratio=1)
-        table.add_row(
-            Text("NATURAL LANGUAGE", style=f"bold {INK_4}"),
-            Text("LOCAL CONTROL", style=f"bold {INK_4}"),
-        )
-        table.add_row(
-            Text("Describe a goal; LightHouse plans and acts through governed capabilities.", style=INK_3),
-            Text("/help  /status  /capabilities  /mode  /init  /clear  /exit", style=INK_3),
-        )
+        table.add_row(Text("NATURAL LANGUAGE", style=f"bold {INK_4}"), Text("LOCAL CONTROL", style=f"bold {INK_4}"))
+        table.add_row(Text("Describe a goal; memory resolves prior files, tasks and addresses.", style=INK_3), Text("/help  /new  /reindex  /status  /capabilities  /mode  /exit", style=INK_3))
         self.console.print(table)
         self.console.print()
 
@@ -187,16 +153,18 @@ class SwissTerminal:
         rows = (
             ("lh", "Open the Swiss interactive terminal"),
             ('lh "task"', "Run one governed natural-language task"),
+            ("/new", "Start a new conversation but retain long-term memory"),
+            ("/reindex", "Refresh the authorized file index"),
             ("/capabilities [query]", "Search the current capability atlas"),
-            ("/mode auto|system|data", "Change the active kernel profile"),
+            ("/mode auto|system|data|desktop", "Change the active kernel profile"),
             ("/init [path]", "Bind a project directory as a confined workspace"),
             ("! <exact command>", "Pass an exact legacy lh command"),
-            ("/doctor", "Verify control plane, model and workspace"),
+            ("/doctor", "Verify control plane, conversation and memory index"),
             ("/clear", "Redraw the terminal grid"),
             ("/exit", "Close this terminal session"),
         )
         table = Table(box=None, expand=True, padding=(0, 2), show_header=False)
-        table.add_column(style=f"bold {PAPER}", width=28)
+        table.add_column(style=f"bold {PAPER}", width=30)
         table.add_column(style=INK_3)
         for command, description in rows:
             table.add_row(Text(command), Text(description))
@@ -214,14 +182,7 @@ class SwissTerminal:
     def capabilities(self, items: Iterable[dict[str, Any]]) -> None:
         rows = list(items)
         self.section("CAPABILITY ATLAS", f"{len(rows):02d} VISIBLE")
-        table = Table(
-            box=box.MINIMAL,
-            expand=True,
-            header_style=f"bold {INK_4}",
-            border_style="grey23",
-            row_styles=[PAPER, INK_2],
-            padding=(0, 1),
-        )
+        table = Table(box=box.MINIMAL, expand=True, header_style=f"bold {INK_4}", border_style="grey23", row_styles=[PAPER, INK_2], padding=(0, 1))
         table.add_column("COMMAND", ratio=2)
         table.add_column("TOOL", ratio=3)
         table.add_column("KERNEL", width=9)
@@ -230,70 +191,43 @@ class SwissTerminal:
         for item in rows:
             risk = str(item.get("risk") or "low").upper()
             risk_style = RED if risk in {"HIGH", "CRITICAL"} else AMBER if risk == "NORMAL" else INK_3
-            table.add_row(
-                _text(item.get("command"), PAPER),
-                _text(item.get("tool_name"), INK_2),
-                _text(str(item.get("kernel") or "").upper(), CYAN),
-                _text(risk, risk_style),
-                _text("W" if item.get("writes") else "—", RED if item.get("writes") else INK_4),
-            )
+            table.add_row(_text(item.get("command"), PAPER), _text(item.get("tool_name"), INK_2), _text(str(item.get("kernel") or "").upper(), CYAN), _text(risk, risk_style), _text("W" if item.get("writes") else "—", RED if item.get("writes") else INK_4))
         self.console.print(table)
         self.console.print()
 
     def task_banner(self, task: str) -> None:
-        self.section("RUN REQUEST", "LIGHTHOUSE BRAIN")
-        number = Text("01", style=f"bold {RED}")
-        body = Text(str(task), style=PAPER)
+        self.section("RUN REQUEST", "LIGHTHOUSE BRAIN + MEMORY")
         grid = Table.grid(expand=True, padding=(0, 2))
         grid.add_column(width=4)
-        grid.add_column(ratio=1)
-        grid.add_row(number, body)
+        grid.add_column(ratio=1, overflow="fold")
+        grid.add_row(Text("01", style=f"bold {RED}"), _message_text(task))
         self.console.print(grid)
         self.console.print()
 
     def busy(self, label: str):
         if not self.console.is_terminal:
             return nullcontext()
-        return self.console.status(
-            Text(label.upper(), style=f"bold {PAPER}"),
-            spinner="dots12",
-            spinner_style=RED,
-            refresh_per_second=12,
-        )
+        return self.console.status(Text(label.upper(), style=f"bold {PAPER}"), spinner="dots12", spinner_style=RED, refresh_per_second=12)
 
-    def render_run(
-        self,
-        snapshot: dict[str, Any],
-        *,
-        seen: set[tuple[Any, ...]] | None = None,
-    ) -> set[tuple[Any, ...]]:
+    def render_run(self, snapshot: dict[str, Any], *, seen: set[tuple[Any, ...]] | None = None) -> set[tuple[Any, ...]]:
         seen = set() if seen is None else set(seen)
         run = snapshot.get("run") or {}
-        steps = snapshot.get("steps") or []
-        new_steps: list[tuple[int, dict[str, Any], tuple[Any, ...]]] = []
-        for index, step in enumerate(steps):
-            if not isinstance(step, dict):
-                continue
-            key = _step_key(step, index)
-            if key not in seen:
-                new_steps.append((index, step, key))
-
+        new_steps = []
+        for index, step in enumerate(snapshot.get("steps") or []):
+            if isinstance(step, dict):
+                key = _step_key(step, index)
+                if key not in seen:
+                    new_steps.append((step, key))
         if new_steps:
-            run_id = self._compact_id(str(run.get("id") or ""), 28)
-            status = str(run.get("status") or "running").upper()
-            self.section(f"RUN / {run_id}", status)
+            self.section(f"RUN / {self._compact_id(str(run.get('id') or ''), 28)}", str(run.get("status") or "running").upper())
             timeline = Table.grid(expand=True, padding=(0, 1))
             timeline.add_column(width=4, justify="right")
             timeline.add_column(width=12)
-            timeline.add_column(ratio=1)
-            for index, step, key in new_steps:
+            timeline.add_column(ratio=1, overflow="fold")
+            for step, key in new_steps:
                 kind = str(step.get("kind") or "event")
                 label, number, color = _STAGE.get(kind, (kind.upper()[:11], "·", INK_3))
-                timeline.add_row(
-                    Text(number, style=f"bold {color}"),
-                    Text(label, style=f"bold {color}"),
-                    Text(self._step_summary(step), style=INK_2),
-                )
+                timeline.add_row(Text(number, style=f"bold {color}"), Text(label, style=f"bold {color}"), _message_text(self._step_summary(step), INK_2))
                 seen.add(key)
             self.console.print(timeline)
             self.console.print()
@@ -305,15 +239,21 @@ class SwissTerminal:
         if kind == "run_created":
             return _short(payload.get("task"))
         if kind == "project_context":
-            result = payload.get("result") or payload.get("context") or payload
-            return "Project context indexed · " + _short(result, 140)
+            return "Project context indexed · " + _short(payload.get("result") or payload.get("context") or payload, 140)
         if kind == "decision":
             decision_kind = str(payload.get("kind") or "decision").upper()
+            if decision_kind == "FINAL":
+                return "FINAL DECISION READY · " + _short(payload.get("reason"), 120)
             target = payload.get("capability") or payload.get("message") or payload.get("reason")
             reason = payload.get("reason")
             return f"{decision_kind} · {_short(target, 115)}" + (f" · {_short(reason, 70)}" if reason and reason != target else "")
+        if kind == "address_grounded":
+            return "Server grounded the execution coordinate · " + _short(payload.get("grounded_arguments") or {}, 160)
+        if kind == "address_rejected":
+            return "Invented or unobserved address rejected · " + _short(payload.get("error"), 150)
         if kind == "operation_dispatched":
-            return f"{payload.get('capability') or 'operation'} · {str(payload.get('status') or 'created').upper()} · {self._compact_id(str(payload.get('operation_id') or ''), 26)}"
+            grounded = " · GROUNDED" if payload.get("grounded") else ""
+            return f"{payload.get('capability') or 'operation'} · {str(payload.get('status') or 'created').upper()} · {self._compact_id(str(payload.get('operation_id') or ''), 26)}{grounded}"
         if kind == "auto_confirmation":
             return f"Explicit confirmation applied · {self._compact_id(str(payload.get('operation_id') or ''), 26)}"
         if kind == "observation":
@@ -321,9 +261,10 @@ class SwissTerminal:
             operation = payload.get("operation") if isinstance(payload.get("operation"), dict) else {}
             ok = receipt.get("ok")
             state = "RECEIPT OK" if ok is True else "RECEIPT FAILED" if ok is False else str(operation.get("status") or "observed").upper()
-            result = receipt.get("result") if receipt else payload.get("result")
-            return f"{state} · {_short(result, 145)}"
-        if kind in {"run_completed", "run_failed", "input_required", "user_input"}:
+            return f"{state} · {_short(receipt.get('result') if receipt else payload.get('result'), 145)}"
+        if kind == "run_completed":
+            return "Receipt-backed result ready"
+        if kind in {"run_failed", "input_required", "user_input"}:
             return _short(payload.get("message") or payload.get("reason") or payload)
         if kind in {"protocol_error", "provider_error", "tool_rejected"}:
             return _short(payload.get("error") or payload)
@@ -334,25 +275,16 @@ class SwissTerminal:
         envelope = operation.get("envelope") if isinstance(operation.get("envelope"), dict) else {}
         meta = Table.grid(expand=True, padding=(0, 2))
         meta.add_column(width=14, style=f"bold {INK_4}")
-        meta.add_column(ratio=1, style=PAPER)
+        meta.add_column(ratio=1, style=PAPER, overflow="fold")
         meta.add_row("CAPABILITY", _text(operation.get("capability"), PAPER))
         meta.add_row("OPERATION", _text(operation.get("id"), INK_2))
         meta.add_row("KERNEL", _text(str(operation.get("kernel") or "").upper(), CYAN))
         meta.add_row("TARGET", _text(operation.get("target_id"), INK_2))
-        arguments = envelope.get("arguments") if isinstance(envelope, dict) else None
         contents: list[Any] = [meta]
+        arguments = envelope.get("arguments") if isinstance(envelope, dict) else None
         if arguments:
             contents.extend([Text(""), Text("FROZEN ARGUMENTS", style=f"bold {INK_4}"), JSON.from_data(arguments)])
-        self.console.print(
-            Panel(
-                Group(*contents),
-                title=Text("CONFIRM / FROZEN OPERATION", style=f"bold {RED}"),
-                subtitle=Text("NO WRITE HAS OCCURRED", style=INK_4),
-                border_style=RED,
-                box=box.SQUARE,
-                padding=(1, 2),
-            )
-        )
+        self.console.print(Panel(Group(*contents), title=Text("CONFIRM / FROZEN OPERATION", style=f"bold {RED}"), subtitle=Text("NO WRITE HAS OCCURRED", style=INK_4), border_style=RED, box=box.SQUARE, padding=(1, 2)))
 
     def confirm(self) -> bool:
         return Confirm.ask(Text("AUTHORIZE THIS EXACT OPERATION", style=f"bold {PAPER}"), default=False, console=self.console)
@@ -367,38 +299,22 @@ class SwissTerminal:
         status = str(run.get("status") or "unknown").upper()
         message = str(run.get("final_message") or "Run state persisted.")
         tone = GREEN if status == "SUCCEEDED" else RED if status == "FAILED" else AMBER
-        self.console.print(
-            Panel(
-                Text(message, style=PAPER),
-                title=Text(f"{status} / RECEIPT-BACKED", style=f"bold {tone}"),
-                border_style=tone,
-                box=box.SQUARE,
-                padding=(1, 2),
-            )
-        )
+        self.console.print(Panel(_message_text(message), title=Text(f"{status} / RECEIPT-BACKED", style=f"bold {tone}"), border_style=tone, box=box.SQUARE, padding=(1, 2)))
         self.console.print()
 
     def receipt(self, receipt: dict[str, Any]) -> None:
         ok = receipt.get("ok")
         tone = GREEN if ok else RED
         result = receipt.get("result")
-        body: Any = JSON.from_data(result) if isinstance(result, (dict, list)) else Text(str(result or "—"), style=PAPER)
-        self.console.print(
-            Panel(
-                body,
-                title=Text("RECEIPT / VERIFIED" if ok else "RECEIPT / FAILED", style=f"bold {tone}"),
-                subtitle=Text(str(receipt.get("result_hash") or "")[:20], style=INK_4),
-                border_style=tone,
-                box=box.SQUARE,
-            )
-        )
+        body: Any = JSON.from_data(result) if isinstance(result, (dict, list)) else _message_text(result)
+        self.console.print(Panel(body, title=Text("RECEIPT / VERIFIED" if ok else "RECEIPT / FAILED", style=f"bold {tone}"), subtitle=Text(str(receipt.get("result_hash") or "")[:20], style=INK_4), border_style=tone, box=box.SQUARE))
 
     def doctor(self, checks: dict[str, Any]) -> None:
         self.section("SYSTEM DIAGNOSTIC", "LOCAL CONTROL PLANE")
         table = Table(box=box.MINIMAL, expand=True, padding=(0, 1), header_style=f"bold {INK_4}")
         table.add_column("CHECK", ratio=1)
         table.add_column("STATE", width=12)
-        table.add_column("DETAIL", ratio=3)
+        table.add_column("DETAIL", ratio=3, overflow="fold")
         for name, value in checks.items():
             if isinstance(value, bool):
                 ok, detail = value, "READY" if value else "MISSING"
@@ -408,17 +324,13 @@ class SwissTerminal:
             else:
                 ok = value is not None and value != "" and value is not False
                 detail = _short(value)
-            table.add_row(
-                Text(str(name).replace("_", " ").upper(), style=PAPER),
-                Text("READY" if ok else "CHECK", style=f"bold {GREEN if ok else AMBER}"),
-                Text(detail, style=INK_3),
-            )
+            table.add_row(Text(str(name).replace("_", " ").upper(), style=PAPER), Text("READY" if ok else "CHECK", style=f"bold {GREEN if ok else AMBER}"), _message_text(detail, INK_3))
         self.console.print(table)
         self.console.print()
 
     def notice(self, label: str, message: str, *, tone: str = "neutral") -> None:
         color = {"red": RED, "green": GREEN, "amber": AMBER, "cyan": CYAN}.get(tone, INK_3)
-        self.console.print(Panel(Text(str(message), style=PAPER), title=Text(label.upper(), style=f"bold {color}"), border_style=color, box=box.SQUARE))
+        self.console.print(Panel(_message_text(message), title=Text(label.upper(), style=f"bold {color}"), border_style=color, box=box.SQUARE, padding=(0, 1)))
 
     def error(self, message: str) -> None:
         self.notice("ERROR", message, tone="red")
@@ -428,30 +340,14 @@ class SwissTerminal:
             return None
         history_path.parent.mkdir(parents=True, exist_ok=True)
         completer = WordCompleter(list(_LOCAL_COMMANDS), sentence=True, ignore_case=True)
-        style = Style.from_dict(
-            {
-                "brand": "#e44535 bold",
-                "mode": "#f2efe8 bold",
-                "path": "#777777",
-                "prompt": "#f2efe8 bold",
-                "bottom-toolbar": "bg:#1f1f1f #9a9a9a",
-            }
-        )
-        return PromptSession(
-            history=FileHistory(str(history_path)),
-            auto_suggest=AutoSuggestFromHistory(),
-            completer=completer,
-            complete_while_typing=False,
-            style=style,
-        )
+        style = Style.from_dict({"brand": "#e44535 bold", "mode": "#f2efe8 bold", "path": "#777777", "prompt": "#f2efe8 bold", "bottom-toolbar": "bg:#1f1f1f #9a9a9a"})
+        return PromptSession(history=FileHistory(str(history_path)), auto_suggest=AutoSuggestFromHistory(), completer=completer, complete_while_typing=False, style=style)
 
     def prompt(self, *, mode: str, project: str, session=None) -> str:
         project_name = Path(project).name or project
         if session is not None:
-            message = HTML(
-                f"<brand>LH</brand><path> / </path><mode>{str(mode).upper()}</mode><path> / {self._escape_html(project_name)}</path><prompt>  ›  </prompt>"
-            )
-            toolbar = HTML("<b> /help </b> control index   <b>↑↓</b> history   <b>tab</b> complete   <b>^C</b> exit")
+            message = HTML(f"<brand>LH</brand><path> / </path><mode>{str(mode).upper()}</mode><path> / {self._escape_html(project_name)}</path><prompt>  ›  </prompt>")
+            toolbar = HTML("<b> /help </b> control   <b>/new</b> conversation   <b>/reindex</b> files   <b>↑↓</b> history   <b>^C</b> exit")
             return session.prompt(message, bottom_toolbar=toolbar).strip()
         return self.console.input(Text(f"LH / {str(mode).upper()} / {project_name}  ›  ", style=f"bold {PAPER}")).strip()
 
@@ -460,6 +356,5 @@ class SwissTerminal:
         return value.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
     def terminal_size_warning(self) -> None:
-        columns = shutil.get_terminal_size((100, 30)).columns
-        if columns < 72:
+        if shutil.get_terminal_size((100, 30)).columns < 72:
             self.notice("DISPLAY", "For the full Swiss grid, widen the terminal to at least 72 columns.", tone="amber")
