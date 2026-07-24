@@ -13,8 +13,34 @@ from urllib.parse import urlencode, urlsplit
 import httpx
 
 
+def _error_text(value: Any) -> str:
+    if isinstance(value, (dict, list)):
+        try:
+            text = json.dumps(value, ensure_ascii=False, sort_keys=True)
+        except (TypeError, ValueError):
+            text = str(value)
+    else:
+        text = "" if value is None else str(value)
+    return text.strip()
+
+
+def exception_message(exc: BaseException) -> str:
+    message = _error_text(exc)
+    if message:
+        return message
+    return (
+        f"{exc.__class__.__name__} returned no diagnostic text. "
+        "Run `lh doctor` and inspect ~/.lighthouse/logs/server-error.log."
+    )
+
+
 class CLIError(RuntimeError):
-    pass
+    def __str__(self) -> str:
+        message = super().__str__().strip()
+        return message or (
+            "LightHouse request failed without a server message. "
+            "Run `lh doctor` and inspect ~/.lighthouse/logs/server-error.log."
+        )
 
 
 def config_path(args) -> Path:
@@ -76,7 +102,8 @@ class Client:
         parsed = urlsplit(self.base_url)
         if parsed.scheme not in {"http", "https"} or not parsed.hostname:
             raise CLIError("LIGHTHOUSE_URL is invalid")
-        if parsed.scheme == "http" and parsed.hostname not in {"localhost", "127.0.0.1", "::1"}:
+        loopback = parsed.hostname in {"localhost", "127.0.0.1", "::1"}
+        if parsed.scheme == "http" and not loopback:
             raise CLIError("operator credentials require HTTPS except on loopback")
         if len(api_key) < 16:
             raise CLIError("LIGHTHOUSE_API_KEY is missing or too short")
@@ -85,16 +112,30 @@ class Client:
             headers={"Authorization": "Bearer " + api_key},
             timeout=timeout,
             follow_redirects=False,
+            trust_env=not loopback,
         )
 
     def request(self, method: str, path: str, payload: dict[str, Any] | None = None) -> Any:
-        response = self.client.request(method, path, json=payload)
+        method = method.upper()
+        try:
+            response = self.client.request(method, path, json=payload)
+        except httpx.RequestError as exc:
+            reason = exception_message(exc)
+            raise CLIError(
+                f"cannot reach LightHouse at {self.base_url}: {reason}"
+            ) from exc
         try:
             value = response.json()
         except ValueError:
             value = {"detail": response.text}
         if response.is_error:
-            raise CLIError(str(value.get("detail") if isinstance(value, dict) else value))
+            detail = value.get("detail") if isinstance(value, dict) else value
+            message = _error_text(detail)
+            if not message:
+                message = response.reason_phrase.strip() or "request failed with an empty response"
+            raise CLIError(
+                f"{method} {path} failed with HTTP {response.status_code}: {message}"
+            )
         return value
 
 
@@ -296,7 +337,7 @@ def main(argv: list[str] | None = None) -> int:
             print_json(client.request("GET", f"/v1/agent/runs/{args.run_id}"))
         return 0
     except (CLIError, OSError, ValueError) as exc:
-        print(f"lh: {exc}", file=sys.stderr)
+        print(f"lh: {exception_message(exc)}", file=sys.stderr)
         return 2
 
 
