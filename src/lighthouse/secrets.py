@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import ctypes
+from ctypes import wintypes
 import getpass
 import hashlib
 import os
@@ -12,26 +14,19 @@ from typing import Final
 
 CONTROL_KEY_SERVICE: Final = "com.cpym.su.lighthouse.control"
 MODEL_KEY_SERVICE: Final = "com.cpym.su.lighthouse.model"
+_CRYPTPROTECT_UI_FORBIDDEN: Final = 0x1
 
 
 class SecretStoreError(RuntimeError):
     pass
 
 
+class _DataBlob(ctypes.Structure):
+    _fields_ = [("cbData", wintypes.DWORD), ("pbData", ctypes.POINTER(ctypes.c_ubyte))]
+
+
 def _account() -> str:
     return getpass.getuser() or os.environ.get("USER") or os.environ.get("USERNAME") or "lighthouse"
-
-
-def _creation_flags() -> int:
-    return int(getattr(subprocess, "CREATE_NO_WINDOW", 0)) if os.name == "nt" else 0
-
-
-def _powershell() -> str | None:
-    for name in ("powershell.exe", "pwsh.exe", "powershell", "pwsh"):
-        executable = shutil.which(name)
-        if executable:
-            return executable
-    return None
 
 
 def _windows_secret_root() -> Path:
@@ -48,9 +43,7 @@ def _windows_secret_path(service: str, account: str | None = None) -> Path:
 def keychain_available() -> bool:
     if sys.platform == "darwin":
         return shutil.which("security") is not None
-    if sys.platform == "win32":
-        return _powershell() is not None
-    return False
+    return sys.platform == "win32"
 
 
 def secret_store_name() -> str:
@@ -84,38 +77,84 @@ def _macos_get(service: str, account: str | None = None) -> str | None:
     return value or None
 
 
+def _blob(data: bytes) -> tuple[_DataBlob, ctypes.Array[ctypes.c_char]]:
+    buffer = ctypes.create_string_buffer(data)
+    pointer = ctypes.cast(buffer, ctypes.POINTER(ctypes.c_ubyte))
+    return _DataBlob(len(data), pointer), buffer
+
+
+def _windows_protect(value: str) -> bytes:
+    if sys.platform != "win32":
+        raise SecretStoreError("Windows DPAPI is not available")
+    plain, _buffer = _blob(value.encode("utf-8"))
+    protected = _DataBlob()
+    crypt32 = ctypes.WinDLL("crypt32", use_last_error=True)
+    crypt32.CryptProtectData.argtypes = [
+        ctypes.POINTER(_DataBlob),
+        wintypes.LPCWSTR,
+        ctypes.POINTER(_DataBlob),
+        wintypes.LPVOID,
+        wintypes.LPVOID,
+        wintypes.DWORD,
+        ctypes.POINTER(_DataBlob),
+    ]
+    crypt32.CryptProtectData.restype = wintypes.BOOL
+    if not crypt32.CryptProtectData(
+        ctypes.byref(plain),
+        "LightHouse OS",
+        None,
+        None,
+        None,
+        _CRYPTPROTECT_UI_FORBIDDEN,
+        ctypes.byref(protected),
+    ):
+        raise ctypes.WinError(ctypes.get_last_error())
+    try:
+        return ctypes.string_at(protected.pbData, protected.cbData)
+    finally:
+        ctypes.windll.kernel32.LocalFree(protected.pbData)
+
+
+def _windows_unprotect(data: bytes) -> str:
+    if sys.platform != "win32":
+        raise SecretStoreError("Windows DPAPI is not available")
+    protected, _buffer = _blob(data)
+    plain = _DataBlob()
+    crypt32 = ctypes.WinDLL("crypt32", use_last_error=True)
+    crypt32.CryptUnprotectData.argtypes = [
+        ctypes.POINTER(_DataBlob),
+        ctypes.POINTER(wintypes.LPWSTR),
+        ctypes.POINTER(_DataBlob),
+        wintypes.LPVOID,
+        wintypes.LPVOID,
+        wintypes.DWORD,
+        ctypes.POINTER(_DataBlob),
+    ]
+    crypt32.CryptUnprotectData.restype = wintypes.BOOL
+    if not crypt32.CryptUnprotectData(
+        ctypes.byref(protected),
+        None,
+        None,
+        None,
+        None,
+        _CRYPTPROTECT_UI_FORBIDDEN,
+        ctypes.byref(plain),
+    ):
+        raise ctypes.WinError(ctypes.get_last_error())
+    try:
+        return ctypes.string_at(plain.pbData, plain.cbData).decode("utf-8")
+    finally:
+        ctypes.windll.kernel32.LocalFree(plain.pbData)
+
+
 def _windows_get(service: str, account: str | None = None) -> str | None:
     path = _windows_secret_path(service, account)
     if not path.is_file():
         return None
-    powershell = _powershell()
-    if not powershell:
+    try:
+        value = _windows_unprotect(path.read_bytes()).strip()
+    except (OSError, UnicodeError):
         return None
-    script = r"""
-$ErrorActionPreference = 'Stop'
-$protected = [System.IO.File]::ReadAllBytes($env:LIGHTHOUSE_SECRET_PATH)
-$plain = [System.Security.Cryptography.ProtectedData]::Unprotect(
-  $protected,
-  $null,
-  [System.Security.Cryptography.DataProtectionScope]::CurrentUser
-)
-[Console]::Out.Write([System.Text.Encoding]::UTF8.GetString($plain))
-""".strip()
-    env = dict(os.environ)
-    env["LIGHTHOUSE_SECRET_PATH"] = str(path)
-    process = subprocess.run(
-        [powershell, "-NoLogo", "-NoProfile", "-NonInteractive", "-Command", script],
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-        capture_output=True,
-        check=False,
-        env=env,
-        creationflags=_creation_flags(),
-    )
-    if process.returncode != 0:
-        return None
-    value = (process.stdout or "").strip()
     return value or None
 
 
@@ -152,37 +191,19 @@ def _macos_set(service: str, value: str, account: str | None = None) -> None:
 
 
 def _windows_set(service: str, value: str, account: str | None = None) -> None:
-    powershell = _powershell()
-    if not powershell:
-        raise SecretStoreError("Windows PowerShell is not available")
     path = _windows_secret_path(service, account)
     path.parent.mkdir(parents=True, exist_ok=True)
-    script = r"""
-$ErrorActionPreference = 'Stop'
-$plain = [System.Text.Encoding]::UTF8.GetBytes($env:LIGHTHOUSE_SECRET_VALUE)
-$protected = [System.Security.Cryptography.ProtectedData]::Protect(
-  $plain,
-  $null,
-  [System.Security.Cryptography.DataProtectionScope]::CurrentUser
-)
-[System.IO.File]::WriteAllBytes($env:LIGHTHOUSE_SECRET_PATH, $protected)
-""".strip()
-    env = dict(os.environ)
-    env["LIGHTHOUSE_SECRET_PATH"] = str(path)
-    env["LIGHTHOUSE_SECRET_VALUE"] = value
-    process = subprocess.run(
-        [powershell, "-NoLogo", "-NoProfile", "-NonInteractive", "-Command", script],
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-        capture_output=True,
-        check=False,
-        env=env,
-        creationflags=_creation_flags(),
-    )
-    if process.returncode != 0:
-        message = (process.stderr or process.stdout or "Windows DPAPI write failed").strip()
-        raise SecretStoreError(message)
+    temporary = path.with_suffix(".tmp")
+    try:
+        temporary.write_bytes(_windows_protect(value))
+        os.replace(temporary, path)
+    except OSError as exc:
+        raise SecretStoreError(str(exc)) from exc
+    finally:
+        try:
+            temporary.unlink()
+        except FileNotFoundError:
+            pass
     try:
         path.chmod(0o600)
     except OSError:
