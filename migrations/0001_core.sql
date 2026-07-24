@@ -107,7 +107,7 @@ CREATE TABLE IF NOT EXISTS lh_workspace_data_targets (
 CREATE UNIQUE INDEX IF NOT EXISTS idx_lh_workspace_data_targets_default ON lh_workspace_data_targets(workspace_id) WHERE is_default AND active;
 INSERT INTO lh_workspace_data_targets(workspace_id,target_id,alias,is_default)
 SELECT id,data_target_id,'default',TRUE FROM lh_workspaces WHERE data_target_id IS NOT NULL
-ON CONFLICT (workspace_id,alias) DO NOTHING;
+ON CONFLICT DO NOTHING;
 
 CREATE TABLE IF NOT EXISTS lh_schema_nodes (
   id CHAR(64) PRIMARY KEY,
