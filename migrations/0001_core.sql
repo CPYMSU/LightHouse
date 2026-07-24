@@ -3,31 +3,35 @@ BEGIN;
 CREATE TABLE IF NOT EXISTS lh_targets (
   id UUID PRIMARY KEY,
   name TEXT NOT NULL UNIQUE,
-  kind TEXT NOT NULL CHECK (kind IN ('data','system')),
+  kind TEXT NOT NULL,
   config JSONB NOT NULL DEFAULT '{}'::jsonb,
   active BOOLEAN NOT NULL DEFAULT TRUE,
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+ALTER TABLE lh_targets DROP CONSTRAINT IF EXISTS lh_targets_kind_check;
+ALTER TABLE lh_targets ADD CONSTRAINT lh_targets_kind_check
+  CHECK (kind IN ('data','system','desktop'));
 
 CREATE TABLE IF NOT EXISTS lh_workspaces (
   id UUID PRIMARY KEY,
   name TEXT NOT NULL UNIQUE,
   data_target_id UUID REFERENCES lh_targets(id),
   system_target_id UUID REFERENCES lh_targets(id),
+  desktop_target_id UUID REFERENCES lh_targets(id),
   config JSONB NOT NULL DEFAULT '{}'::jsonb,
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
-ALTER TABLE lh_workspaces
-  ADD COLUMN IF NOT EXISTS config JSONB NOT NULL DEFAULT '{}'::jsonb;
+ALTER TABLE lh_workspaces ADD COLUMN IF NOT EXISTS config JSONB NOT NULL DEFAULT '{}'::jsonb;
+ALTER TABLE lh_workspaces ADD COLUMN IF NOT EXISTS desktop_target_id UUID REFERENCES lh_targets(id);
 
 CREATE TABLE IF NOT EXISTS lh_operations (
   id UUID PRIMARY KEY,
   workspace_id UUID NOT NULL REFERENCES lh_workspaces(id),
   target_id UUID NOT NULL REFERENCES lh_targets(id),
   capability TEXT NOT NULL,
-  kernel TEXT NOT NULL CHECK (kernel IN ('data','system')),
+  kernel TEXT NOT NULL,
   actor TEXT NOT NULL,
   status TEXT NOT NULL CHECK (status IN ('created','awaiting_confirmation','running','succeeded','failed','cancelled')),
   envelope JSONB NOT NULL,
@@ -37,10 +41,11 @@ CREATE TABLE IF NOT EXISTS lh_operations (
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
-CREATE INDEX IF NOT EXISTS idx_lh_operations_workspace_created
-  ON lh_operations(workspace_id,created_at DESC);
-CREATE INDEX IF NOT EXISTS idx_lh_operations_status
-  ON lh_operations(status,updated_at);
+ALTER TABLE lh_operations DROP CONSTRAINT IF EXISTS lh_operations_kernel_check;
+ALTER TABLE lh_operations ADD CONSTRAINT lh_operations_kernel_check
+  CHECK (kernel IN ('data','system','desktop'));
+CREATE INDEX IF NOT EXISTS idx_lh_operations_workspace_created ON lh_operations(workspace_id,created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_lh_operations_status ON lh_operations(status,updated_at);
 
 CREATE TABLE IF NOT EXISTS lh_operation_events (
   id BIGSERIAL PRIMARY KEY,
@@ -65,12 +70,9 @@ CREATE TABLE IF NOT EXISTS lh_agent_runs (
   task TEXT NOT NULL,
   workspace_id UUID NOT NULL REFERENCES lh_workspaces(id),
   actor TEXT NOT NULL,
-  mode TEXT NOT NULL CHECK (mode IN ('data','system','auto')),
+  mode TEXT NOT NULL,
   status TEXT NOT NULL CHECK (
-    status IN (
-      'created','running','awaiting_confirmation','waiting_input',
-      'succeeded','failed','cancelled'
-    )
+    status IN ('created','running','awaiting_confirmation','waiting_input','succeeded','failed','cancelled')
   ),
   max_steps INTEGER NOT NULL CHECK (max_steps BETWEEN 1 AND 64),
   current_step INTEGER NOT NULL DEFAULT 0 CHECK (current_step >= 0),
@@ -80,10 +82,11 @@ CREATE TABLE IF NOT EXISTS lh_agent_runs (
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
-CREATE INDEX IF NOT EXISTS idx_lh_agent_runs_workspace_created
-  ON lh_agent_runs(workspace_id,created_at DESC);
-CREATE INDEX IF NOT EXISTS idx_lh_agent_runs_status
-  ON lh_agent_runs(status,updated_at);
+ALTER TABLE lh_agent_runs DROP CONSTRAINT IF EXISTS lh_agent_runs_mode_check;
+ALTER TABLE lh_agent_runs ADD CONSTRAINT lh_agent_runs_mode_check
+  CHECK (mode IN ('data','system','desktop','auto'));
+CREATE INDEX IF NOT EXISTS idx_lh_agent_runs_workspace_created ON lh_agent_runs(workspace_id,created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_lh_agent_runs_status ON lh_agent_runs(status,updated_at);
 
 CREATE TABLE IF NOT EXISTS lh_agent_steps (
   id BIGSERIAL PRIMARY KEY,
@@ -113,8 +116,7 @@ CREATE TABLE IF NOT EXISTS lh_index_nodes (
   updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   UNIQUE(workspace_id,source_type,source_id,revision)
 );
-CREATE INDEX IF NOT EXISTS idx_lh_index_nodes_search
-  ON lh_index_nodes USING GIN(search_vector);
+CREATE INDEX IF NOT EXISTS idx_lh_index_nodes_search ON lh_index_nodes USING GIN(search_vector);
 
 CREATE TABLE IF NOT EXISTS lh_index_edges (
   from_node_id UUID NOT NULL REFERENCES lh_index_nodes(id) ON DELETE CASCADE,
