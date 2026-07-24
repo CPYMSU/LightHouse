@@ -1,190 +1,129 @@
 # LightHouse OS
 
-LightHouse OS is a PostgreSQL-first governed AI super terminal. One durable
-Operation Kernel controls two execution surfaces:
+LightHouse is one integrated PostgreSQL-first AI operating terminal.
 
-- **Data:** PostgreSQL schema inspection, read-only queries and transactional
-  mutations.
-- **System:** local or OpenSSH Linux files, shell, systemd, journal, Git, patch
-  and test commands.
-
-Every side effect is first frozen into an immutable Operation envelope. Events
-and the final Receipt remain the source of truth after a timeout or disconnect.
-
-## 0.2 agent-runtime slice
-
-The current branch adds a Codex/Claude-Code-style coding loop without bypassing
-the LightHouse execution boundary:
+It is not “LightHouse plus a separately installed Agent Runtime.” Planning,
+context, action, observation, verification, memory and recovery are native
+LightHouse capabilities, and every side effect still passes through the governed
+Operation Kernel.
 
 ```text
-task
-  -> load project context and AGENTS.md/LIGHTHOUSE.md
-  -> model selects one exact capability
-  -> Operation Kernel validates and dispatches
-  -> Receipt becomes the next observation
-  -> inspect / patch / test / diff / verify
-  -> final answer
+user intent
+  -> LightHouse Brain
+  -> project/data context
+  -> exact capability
+  -> immutable Operation
+  -> Data or System executor
+  -> durable Receipt
+  -> verification or next action
 ```
 
-Implemented capabilities include:
+## Install on macOS with one command
 
-- PostgreSQL `data schema`, `data query` and transactional `data exec`;
-- local/OpenSSH Linux execution;
-- project file index and project-instruction loading;
+Open Terminal and run:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/CPYMSU/LightHouse/main/install-macos.sh | bash
+```
+
+The installer installs Homebrew when necessary, Python 3.12, PostgreSQL 16 and
+Git; downloads the complete LightHouse package; creates a private local
+PostgreSQL control plane; asks for the model endpoint, model name and hidden API
+key; stores credentials in macOS Keychain; installs a `launchd` background
+service; installs the single `lh` command; and runs migrations and health checks.
+
+No API key is written to the repository or `~/.lighthouse/config.json`.
+
+After installation:
+
+```bash
+cd /path/to/your/project
+lh
+```
+
+LightHouse binds the current project and opens its integrated terminal:
+
+```text
+lh> inspect this repository and explain its architecture
+lh> run the tests and identify the root cause
+lh> fix the failure, rerun tests and show me the diff
+```
+
+A single task can also be sent directly:
+
+```bash
+lh "inspect the failing tests, fix the root cause and verify the result"
+```
+
+## Built-in capabilities
+
+### System surface
+
+- local and OpenSSH Linux targets;
+- project instruction and context loading;
 - bounded file read and search;
-- unified diff application through `git apply`;
+- unified diff application;
+- shell and configured test execution;
 - Git status, diff and explicit-path commit;
-- configurable test execution;
-- systemd status/restart and journal reads;
-- durable agent runs and append-only agent steps;
-- confirmation pause/resume and optional `--yes` auto-confirmation for
-  **explicit** operations only. Passkey operations are never auto-confirmed.
+- systemd status/restart and journal reads.
 
-## Start locally
+### Data surface
 
-```bash
-docker compose up -d
-python -m venv .venv
-. .venv/bin/activate
-pip install -e '.[dev]'
+- PostgreSQL schema inspection;
+- server-enforced read-only queries;
+- transactional mutations with frozen confirmation and durable Receipts.
 
-export LIGHTHOUSE_DATABASE_URL='postgresql://lighthouse:lighthouse@127.0.0.1:5432/lighthouse'
-export LIGHTHOUSE_API_KEY='replace-with-a-long-random-token'
+### LightHouse Brain
 
-lighthouse-api
-```
+The native reasoning loop loads project and operation context, selects one exact
+authorized capability, submits an idempotent Operation, pauses for confirmation
+when required, observes the durable Receipt, verifies the result and resumes from
+PostgreSQL after a disconnect. The model never receives raw filesystem, shell or
+database authority.
 
-In another terminal:
+## Useful commands
 
 ```bash
-export LIGHTHOUSE_URL='http://127.0.0.1:8787'
-export LIGHTHOUSE_API_KEY='replace-with-a-long-random-token'
-
-lh migrate
-lh capabilities
+lh                         # integrated interactive terminal
+lh "task"                  # one natural-language task
+lh init [PATH]             # bind a project directory
+lh login                   # replace the model key in macOS Keychain
+lh doctor                  # verify installation
+lh capabilities            # inspect the capability atlas
+lh run ...                 # exact governed operation
+lh operation UUID
+lh receipt UUID
 ```
 
-## Configure an AI model
+The older `lh agent ...` form remains as a compatibility alias for scripts, but
+there is no separately installed Agent service.
 
-The runtime uses a Chat-Completions-compatible model endpoint. Model credentials
-stay in the API server environment and are never written into PostgreSQL.
+## Project instructions
+
+LightHouse reads bounded project guidance from:
+
+- `AGENTS.md`
+- `AGENTS.override.md`
+- `LIGHTHOUSE.md`
+- `.lighthouse/project.yaml`
+
+## Security model
+
+- The HTTP service binds to `127.0.0.1` by default.
+- API keys are stored in macOS Keychain.
+- Database and SSH secrets are referenced by server environment names.
+- High-risk writes freeze an exact Operation before confirmation.
+- `--yes` cannot bypass Passkey policies.
+- Receipts, not client timeouts, are the source of execution truth.
+- Local project targets are confined to explicit allowed roots.
+- SSH host-key checking remains strict by default.
+
+## Remove LightHouse
 
 ```bash
-export LIGHTHOUSE_MODEL_BASE_URL='https://api.example.com/v1'
-export LIGHTHOUSE_MODEL_API_KEY='model-secret'
-export LIGHTHOUSE_MODEL='your-model-name'
+curl -fsSL https://raw.githubusercontent.com/CPYMSU/LightHouse/main/uninstall-macos.sh | bash
 ```
 
-`LIGHTHOUSE_MODEL_JSON_MODE=0` disables the provider `response_format` field for
-providers that do not support JSON mode.
+The uninstaller preserves PostgreSQL data rather than deleting it automatically.
 
-## Register targets
-
-Targets contain only secret references and non-secret routing metadata.
-
-```bash
-export WAREHOUSE_DATABASE_URL='postgresql://warehouse:secret@db.internal/warehouse'
-export WAREHOUSE_SSH_KEY='/secure/path/warehouse_ed25519'
-export WAREHOUSE_KNOWN_HOSTS='/secure/path/known_hosts'
-
-lh target-add warehouse-db --kind data \
-  --config-json '{"dsn_env":"WAREHOUSE_DATABASE_URL","read_only":false}'
-
-lh target-add warehouse-server --kind system \
-  --config-json '{
-    "transport":"ssh",
-    "host":"server.example.com",
-    "user":"warehouse",
-    "identity_file_env":"WAREHOUSE_SSH_KEY",
-    "known_hosts_env":"WAREHOUSE_KNOWN_HOSTS",
-    "strict_host_key":true,
-    "default_cwd":"/opt/warehouse",
-    "allowed_roots":["/opt/warehouse"],
-    "test_command":"python3 -m pytest -q"
-  }'
-```
-
-Create and select a workspace:
-
-```bash
-lh workspace-add warehouse-prod \
-  --data-target DATA_TARGET_UUID \
-  --system-target SYSTEM_TARGET_UUID
-
-lh use auto WORKSPACE_UUID --actor adsin
-```
-
-## Exact operations
-
-Read operations execute immediately:
-
-```bash
-lh run data.sql.query.v1 \
-  --args-json '{"sql":"select now() as server_time"}'
-
-lh run system.project.context.v1
-lh run system.git.diff.v1
-```
-
-Writes create one frozen confirmation action:
-
-```bash
-lh run data.sql.exec.v1 --confirm \
-  --idempotency-key create-example-1 \
-  --args-json '{"sql":"insert into examples(name) values (%s) returning id","params":["LightHouse"]}'
-
-lh run system.file.patch.v1 --confirm \
-  --args-json '{"patch":"<unified diff>"}'
-```
-
-## Coding agent
-
-Place project-specific rules in `AGENTS.md`, `AGENTS.override.md`,
-`LIGHTHOUSE.md`, or `.lighthouse/project.yaml` inside the configured project
-root.
-
-Start a governed agent run:
-
-```bash
-lh agent "inspect the failing tests, fix the root cause, run tests and show the diff"
-```
-
-When a write needs confirmation, the run pauses with a pending Operation:
-
-```bash
-lh confirm OPERATION_UUID
-lh agent-resume AGENT_RUN_UUID
-```
-
-For an intentionally unattended development workspace, `--yes` lets the run
-confirm ordinary `explicit` operations:
-
-```bash
-lh agent --yes "fix the tests and verify the result"
-```
-
-This option does not bypass Passkey policies.
-
-## Recover state
-
-```bash
-lh operation OPERATION_UUID
-lh events OPERATION_UUID
-lh receipt OPERATION_UUID
-
-lh agent-show AGENT_RUN_UUID
-lh agent-resume AGENT_RUN_UUID
-```
-
-A client timeout never proves failure. Query the durable Receipt or agent run.
-
-## Current boundary
-
-This is a foundation release, not a production multi-user deployment. The
-gateway currently uses one operator credential. Device-bound identities, RBAC,
-WebAuthn/Passkey verification, streaming long-running workers, nested
-directory-specific `AGENTS.md` discovery and the Warehouse business adapter are
-follow-up slices.
-
-See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) and
-[docs/AGENT_RUNTIME.md](docs/AGENT_RUNTIME.md).
+See `docs/ARCHITECTURE.md` and `docs/AGENT_RUNTIME.md` for internal contracts.
