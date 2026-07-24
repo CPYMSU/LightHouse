@@ -138,6 +138,7 @@ class OpenAICompatibleProvider:
             allow_nan=False,
             sort_keys=True,
             separators=(",", ":"),
+            default=str,
         )
         if len(state_text) > self.max_state_chars:
             state_text = (
