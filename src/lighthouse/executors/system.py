@@ -13,6 +13,7 @@ from ..models import Capability, ExecutionResult, Target
 
 
 _SERVICE = re.compile(r"^[A-Za-z0-9_.@:-]{1,160}$")
+_TYPED_DIRECTORY_COMMAND = re.compile(r"^\s*(?:command\s+)?(?:sudo\s+)?mkdir(?:\s|$)", re.IGNORECASE)
 _MAX_PATCH_BYTES = 2_000_000
 
 
@@ -102,6 +103,10 @@ class SystemExecutor:
         roots = self._configured_roots(target)
         if not any(cwd == root or cwd.startswith(root.rstrip("/") + "/") for root in roots):
             raise PermissionError("cwd is outside the target's allowed roots")
+        if str(target.config.get("transport") or "local").lower() == "local":
+            path = Path(cwd)
+            if not path.exists() or not path.is_dir() or path.is_symlink():
+                raise ValueError("cwd must be a real regular directory")
         return cwd
 
     @staticmethod
@@ -229,6 +234,8 @@ class SystemExecutor:
         command = str(arguments.get("command") or "").strip()
         if not command or "\x00" in command:
             raise ValueError("command is required")
+        if _TYPED_DIRECTORY_COMMAND.match(command):
+            raise ValueError("mkdir must use system.directory.create.v1 so the path is typed and grounded")
         return self._run(
             target,
             command,
@@ -298,105 +305,79 @@ class SystemExecutor:
             raise ValueError("patch is required")
         if len(patch.encode("utf-8")) > _MAX_PATCH_BYTES:
             raise ValueError("patch is too large")
-        check = bool(arguments.get("check", False))
-        command = "git apply --check -" if check else "git apply --whitespace=nowarn -"
+        command = "git apply --whitespace=nowarn --recount"
+        if bool(arguments.get("check", False)):
+            command += " --check"
         return self._run(target, command, cwd=cwd, stdin_text=patch)
 
     def _git_diff(self, target: Target, arguments: dict[str, Any]) -> ExecutionResult:
         cwd = self._cwd(target, arguments)
         staged = bool(arguments.get("staged", False))
-        max_bytes = max(1, min(int(arguments.get("max_bytes") or 524288), 2_000_000))
-        command = "git diff --no-ext-diff --binary"
+        max_bytes = max(4096, min(int(arguments.get("max_bytes") or 524288), 2_000_000))
+        command = "git --no-pager diff --no-ext-diff"
         if staged:
             command += " --cached"
         execution = self._run(target, command, cwd=cwd)
-        if not execution.ok:
-            return execution
         diff = str(execution.result.get("stdout") or "")
-        raw = diff.encode("utf-8", "replace")
-        truncated = len(raw) > max_bytes
-        if truncated:
-            diff = raw[:max_bytes].decode("utf-8", "replace")
+        if len(diff.encode("utf-8", "replace")) > max_bytes:
+            diff = diff.encode("utf-8", "replace")[:max_bytes].decode("utf-8", "replace")
         result = dict(execution.result)
-        result.update({"diff": diff, "staged": staged, "truncated": truncated})
+        result.update({"staged": staged, "diff": diff})
         result.pop("stdout", None)
-        return ExecutionResult(ok=True, result=result, exit_code=0)
+        return ExecutionResult(ok=execution.ok, result=result, exit_code=execution.exit_code)
 
     def _git_commit(self, target: Target, arguments: dict[str, Any]) -> ExecutionResult:
         cwd = self._cwd(target, arguments)
         message = str(arguments.get("message") or "").strip()
-        if not message or "\x00" in message or len(message) > 500:
-            raise ValueError("commit message is required and must be at most 500 characters")
-        raw_paths = arguments.get("paths")
-        if not isinstance(raw_paths, list) or not raw_paths:
-            raise ValueError("git commit requires an explicit non-empty paths array")
-        paths = [self._relative_path(item) for item in raw_paths]
-        quoted_paths = " ".join(shlex.quote(item) for item in paths)
-        command = (
-            f"git add -- {quoted_paths} && "
-            f"git commit -m {shlex.quote(message)}"
-        )
+        if not message or "\x00" in message or "\n" in message:
+            raise ValueError("commit message must be one non-empty line")
+        paths = arguments.get("paths") or []
+        if not isinstance(paths, list):
+            raise ValueError("paths must be an array")
+        safe_paths = [self._relative_path(item) for item in paths]
+        if safe_paths:
+            add = "git add -- " + " ".join(shlex.quote(item) for item in safe_paths)
+        else:
+            add = "git add -u"
+        command = f"{add} && git commit -m {shlex.quote(message)}"
         return self._run(target, command, cwd=cwd)
 
     def _project_context(self, target: Target, arguments: dict[str, Any]) -> ExecutionResult:
         cwd = self._cwd(target, arguments)
-        max_files = max(1, min(int(arguments.get("max_files") or 1000), 5000))
-        max_instruction_bytes = max(
-            1024,
-            min(int(arguments.get("max_instruction_bytes") or 65536), 262144),
-        )
-        file_command = (
-            "if git rev-parse --is-inside-work-tree >/dev/null 2>&1; then "
-            "git ls-files -co --exclude-standard; "
-            "else find . -type f -not -path './.git/*' -print | sed 's#^./##'; "
-            f"fi | head -n {max_files}"
-        )
-        file_result = self._run(target, file_command, cwd=cwd)
-        if not file_result.ok:
-            return file_result
-        files = [line for line in str(file_result.result.get("stdout") or "").splitlines() if line]
-
-        instruction_names = target.config.get("project_instruction_files") or [
-            "AGENTS.md",
-            "AGENTS.override.md",
-            "LIGHTHOUSE.md",
-            ".lighthouse/project.yaml",
-        ]
-        instructions: list[dict[str, Any]] = []
-        remaining = max_instruction_bytes
-        for name in instruction_names:
+        max_files = max(1, min(int(arguments.get("max_files") or 500), 5000))
+        max_instruction_bytes = max(1024, min(int(arguments.get("max_instruction_bytes") or 131072), 1_000_000))
+        instructions = []
+        used = 0
+        for name in target.config.get("project_instruction_files") or []:
+            quoted = shlex.quote(name)
+            probe = self._run(target, f"test -f -- {quoted} && head -c {max_instruction_bytes} -- {quoted} || true", cwd=cwd)
+            content = str(probe.result.get("stdout") or "")
+            if not content:
+                continue
+            remaining = max_instruction_bytes - used
             if remaining <= 0:
                 break
-            safe_name = self._relative_path(name)
-            read = self._file_read(
-                target,
-                {"cwd": cwd, "path": safe_name, "max_bytes": remaining},
-            )
-            if not read.ok:
-                continue
-            content = str(read.result.get("content") or "")
-            if not content.strip():
-                continue
-            size = len(content.encode("utf-8"))
-            instructions.append(
-                {
-                    "path": safe_name,
-                    "content": content,
-                    "truncated": bool(read.result.get("truncated")),
-                }
-            )
-            remaining -= min(size, remaining)
-
-        status = self._run(target, "git status --short --branch", cwd=cwd)
+            encoded = content.encode("utf-8", "replace")[:remaining]
+            content = encoded.decode("utf-8", "replace")
+            used += len(encoded)
+            instructions.append({"path": name, "content": content})
+        index_command = (
+            "if command -v fd >/dev/null 2>&1; then "
+            f"fd -t f -H -E .git . | head -n {max_files}; "
+            "elif command -v find >/dev/null 2>&1; then "
+            f"find . -type f -not -path './.git/*' -print | sed 's#^./##' | head -n {max_files}; "
+            "else true; fi"
+        )
+        index_execution = self._run(target, index_command, cwd=cwd)
+        files = [line for line in str(index_execution.result.get("stdout") or "").splitlines() if line]
         return ExecutionResult(
             ok=True,
             result={
-                "transport": str(target.config.get("transport") or "local"),
                 "cwd": cwd,
                 "files": files,
                 "file_count": len(files),
                 "instructions": instructions,
-                "git_status": status.result if status.ok else {"error": status.result},
+                "instructions_bytes": used,
             },
             exit_code=0,
         )
