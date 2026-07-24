@@ -31,6 +31,7 @@ class WorkspaceCreate(StrictModel):
     name: str = Field(min_length=1, max_length=128)
     data_target_id: str | None = None
     system_target_id: str | None = None
+    desktop_target_id: str | None = None
 
 
 class OperationCreate(StrictModel):
@@ -76,6 +77,7 @@ def _workspace_dict(workspace) -> dict[str, Any]:
         "name": workspace.name,
         "data_target_id": workspace.data_target_id,
         "system_target_id": workspace.system_target_id,
+        "desktop_target_id": workspace.desktop_target_id,
         "config": getattr(workspace, "config", {}),
     }
 
@@ -89,7 +91,7 @@ def create_app(
     kernel = kernel or build_kernel(settings)
     agent_runtime = agent_runtime or build_agent_runtime(settings, kernel)
     repository = kernel.repository
-    app = FastAPI(title="LightHouse OS", version="0.2.0")
+    app = FastAPI(title="LightHouse OS", version="0.5.0")
 
     def require_operator(authorization: str | None = Header(default=None)) -> None:
         expected = "Bearer " + settings.api_key
@@ -131,23 +133,17 @@ def create_app(
     @app.get("/v1/capabilities", dependencies=[Depends(require_operator)])
     def capabilities(
         q: str = "",
-        kernel_mode: Literal["data", "system", "auto"] = Query(default="auto", alias="kernel"),
+        kernel_mode: Literal["data", "system", "desktop", "auto"] = Query(default="auto", alias="kernel"),
         limit: int = 50,
     ) -> dict[str, Any]:
         mode = KernelMode(kernel_mode)
-        items = (
-            kernel.registry.search(q, kernel=mode, limit=limit)
-            if q
-            else kernel.registry.list(kernel=mode)
-        )
+        items = kernel.registry.search(q, kernel=mode, limit=limit) if q else kernel.registry.list(kernel=mode)
         return {"items": [item.public_dict() for item in items], "count": len(items)}
 
     @app.post("/v1/targets", dependencies=[Depends(require_operator)])
     def create_target(payload: TargetCreate) -> dict[str, Any]:
         config = validate_target_config(payload.kind, payload.config)
-        return _target_dict(
-            repository.create_target(name=payload.name, kind=payload.kind, config=config)
-        )
+        return _target_dict(repository.create_target(name=payload.name, kind=payload.kind, config=config))
 
     @app.get("/v1/targets", dependencies=[Depends(require_operator)])
     def list_targets() -> dict[str, Any]:
@@ -156,20 +152,18 @@ def create_app(
 
     @app.post("/v1/workspaces", dependencies=[Depends(require_operator)])
     def create_workspace(payload: WorkspaceCreate) -> dict[str, Any]:
-        if (
-            payload.data_target_id
-            and repository.get_target(payload.data_target_id).kind != TargetKind.DATA
+        for target_id, expected, field in (
+            (payload.data_target_id, TargetKind.DATA, "data_target_id"),
+            (payload.system_target_id, TargetKind.SYSTEM, "system_target_id"),
+            (payload.desktop_target_id, TargetKind.DESKTOP, "desktop_target_id"),
         ):
-            raise ValueError("data_target_id does not reference a data target")
-        if (
-            payload.system_target_id
-            and repository.get_target(payload.system_target_id).kind != TargetKind.SYSTEM
-        ):
-            raise ValueError("system_target_id does not reference a system target")
+            if target_id and repository.get_target(target_id).kind != expected:
+                raise ValueError(f"{field} does not reference a {expected.value} target")
         workspace = repository.create_workspace(
             name=payload.name,
             data_target_id=payload.data_target_id,
             system_target_id=payload.system_target_id,
+            desktop_target_id=payload.desktop_target_id,
         )
         return _workspace_dict(workspace)
 
@@ -194,25 +188,16 @@ def create_app(
     def get_operation(operation_id: str) -> dict[str, Any]:
         return kernel.snapshot(operation_id)
 
-    @app.post(
-        "/v1/operations/{operation_id}/confirm",
-        dependencies=[Depends(require_operator)],
-    )
+    @app.post("/v1/operations/{operation_id}/confirm", dependencies=[Depends(require_operator)])
     def confirm_operation(operation_id: str, payload: ConfirmRequest) -> dict[str, Any]:
         return kernel.confirm(operation_id, actor=payload.actor)
 
-    @app.get(
-        "/v1/operations/{operation_id}/events",
-        dependencies=[Depends(require_operator)],
-    )
+    @app.get("/v1/operations/{operation_id}/events", dependencies=[Depends(require_operator)])
     def get_events(operation_id: str) -> dict[str, Any]:
         items = repository.list_events(operation_id)
         return {"items": items, "count": len(items)}
 
-    @app.get(
-        "/v1/operations/{operation_id}/events.ndjson",
-        dependencies=[Depends(require_operator)],
-    )
+    @app.get("/v1/operations/{operation_id}/events.ndjson", dependencies=[Depends(require_operator)])
     def stream_events(operation_id: str):
         items = repository.list_events(operation_id)
 
@@ -222,10 +207,7 @@ def create_app(
 
         return StreamingResponse(generate(), media_type="application/x-ndjson")
 
-    @app.get(
-        "/v1/operations/{operation_id}/receipt",
-        dependencies=[Depends(require_operator)],
-    )
+    @app.get("/v1/operations/{operation_id}/receipt", dependencies=[Depends(require_operator)])
     def get_receipt(operation_id: str) -> dict[str, Any]:
         receipt = repository.get_receipt(operation_id)
         if receipt is None:
@@ -247,28 +229,15 @@ def create_app(
     def get_agent_run(run_id: str) -> dict[str, Any]:
         return agent_runtime.snapshot(run_id)
 
-    @app.post(
-        "/v1/agent/runs/{run_id}/advance",
-        dependencies=[Depends(require_operator)],
-    )
+    @app.post("/v1/agent/runs/{run_id}/advance", dependencies=[Depends(require_operator)])
     def advance_agent(run_id: str) -> dict[str, Any]:
         return agent_runtime.advance(run_id)
 
-    @app.post(
-        "/v1/agent/runs/{run_id}/input",
-        dependencies=[Depends(require_operator)],
-    )
+    @app.post("/v1/agent/runs/{run_id}/input", dependencies=[Depends(require_operator)])
     def agent_input(run_id: str, payload: AgentInput) -> dict[str, Any]:
-        return agent_runtime.provide_input(
-            run_id,
-            actor=payload.actor,
-            message=payload.message,
-        )
+        return agent_runtime.provide_input(run_id, actor=payload.actor, message=payload.message)
 
-    @app.get(
-        "/v1/agent/runs/{run_id}/events.ndjson",
-        dependencies=[Depends(require_operator)],
-    )
+    @app.get("/v1/agent/runs/{run_id}/events.ndjson", dependencies=[Depends(require_operator)])
     def stream_agent_events(run_id: str):
         items = agent_runtime.snapshot(run_id)["steps"]
 
