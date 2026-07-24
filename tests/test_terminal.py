@@ -26,10 +26,11 @@ class FakeClient:
         raise AssertionError((method, path, payload))
 
 
-def test_ensure_workspace_binds_system_and_desktop(tmp_path, monkeypatch):
+def test_ensure_workspace_binds_macos_system_and_desktop(tmp_path, monkeypatch):
     config = {}
     client = FakeClient()
     monkeypatch.setattr(terminal, "_save", lambda value: None)
+    monkeypatch.setattr(terminal, "_host_platform", lambda: "macos")
 
     workspace = terminal.ensure_workspace(client, config, Path(tmp_path))
 
@@ -38,10 +39,28 @@ def test_ensure_workspace_binds_system_and_desktop(tmp_path, monkeypatch):
     assert config["project_path"] == str(tmp_path.resolve())
     assert config["mode"] == "auto"
     assert [item["kind"] for item in client.targets] == ["system", "desktop"]
+    assert client.targets[0]["config"]["platform"] == "macos"
     assert client.targets[0]["config"]["allowed_roots"] == [str(tmp_path.resolve())]
     assert client.targets[1]["config"]["allowed_schemes"] == ["http", "https", "file"]
     assert client.workspaces[0]["system_target_id"] == "target-1"
     assert client.workspaces[0]["desktop_target_id"] == "target-2"
+
+
+def test_ensure_workspace_builds_windows_powershell_targets(tmp_path, monkeypatch):
+    config = {}
+    client = FakeClient()
+    monkeypatch.setattr(terminal, "_save", lambda value: None)
+    monkeypatch.setattr(terminal, "_host_platform", lambda: "windows")
+
+    terminal.ensure_workspace(client, config, Path(tmp_path))
+
+    system = client.targets[0]["config"]
+    desktop = client.targets[1]["config"]
+    assert system["platform"] == "windows"
+    assert system["shell"] == "powershell.exe"
+    assert desktop["platform"] == "windows"
+    assert "msedge.exe" in desktop["allowed_apps"]
+    assert config["platform"] == "windows"
 
 
 def test_project_test_command_detects_python(tmp_path):
