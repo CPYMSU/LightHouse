@@ -1,64 +1,65 @@
 # LightHouse OS
 
-LightHouse is one integrated PostgreSQL-first AI operating terminal.
+LightHouse is one integrated PostgreSQL-first AI operating terminal with three
+governed execution surfaces:
 
-It is not “LightHouse plus a separately installed Agent Runtime.” Planning,
-context, action, observation, verification, memory and recovery are native
-LightHouse capabilities, and every side effect still passes through the governed
-Operation Kernel.
+- **Data Kernel** — PostgreSQL and structured business data;
+- **System Kernel** — files, code, Git, tests, shell and Linux servers;
+- **Desktop Kernel** — semantic macOS application, browser and file launching.
+
+Planning, context, action, observation, verification, memory and recovery are
+native LightHouse capabilities. Every side effect still passes through the
+Operation Kernel and produces a durable Receipt.
 
 ```text
 user intent
   -> LightHouse Brain
-  -> project/data context
-  -> exact capability
+  -> capability atlas
   -> immutable Operation
-  -> Data or System executor
+  -> Data / System / Desktop executor
   -> durable Receipt
   -> verification or next action
 ```
 
 ## Install on macOS with one command
 
-Open Terminal and run:
-
 ```bash
 curl -fsSL https://raw.githubusercontent.com/CPYMSU/LightHouse/main/install-macos.sh | bash
 ```
 
-The installer installs Homebrew when necessary, Python 3.12, PostgreSQL 16 and
-Git; downloads the complete LightHouse package; creates a private local
-PostgreSQL control plane; asks for the model endpoint, model name and hidden API
-key; stores credentials in macOS Keychain; installs a `launchd` background
-service; installs the single `lh` command; and runs migrations and health checks.
+The installer prepares Python 3.12, PostgreSQL 16 and Git, downloads the complete
+LightHouse package, asks for the model endpoint/name and a hidden API key, stores
+credentials in macOS Keychain, installs a `launchd` background service and the
+single `lh` command, then runs migrations and health checks.
 
 No API key is written to the repository or `~/.lighthouse/config.json`.
 
-After installation:
+## Swiss Super Terminal
+
+Open a project directory and run:
 
 ```bash
 cd /path/to/your/project
 lh
 ```
 
-## Swiss Super Terminal
-
-The native terminal follows the visual discipline of the Warehouse OS 2.0 Super
-Terminal: paper/ink/red contrast, strict grids, compact uppercase labels, visible
-kernel state and receipt-backed execution steps.
+LightHouse automatically binds a confined local System Target and Desktop Target
+and selects `AUTO`, so one goal can cross both surfaces:
 
 ```text
-LH  /  LIGHTHOUSE OS                       FOLIO 0.4 · AI OPERATING TERMINAL
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-KERNEL        WORKSPACE        BRAIN          CONTROL
-SYSTEM        project-local    READY          LOCAL / SECURE
-PROJECT  /Users/you/project
-────────────────────────────────────────────────────────────────────────────
-
-LH / SYSTEM / project  ›
+lh> 製作一個 Swiss 風格的 dashboard.html，然後在 Safari 打開
 ```
 
-During a run, LightHouse exposes the governed lifecycle instead of hiding it:
+The governed chain is:
+
+```text
+System Kernel: inspect project -> create/apply HTML change -> Receipt
+Desktop Kernel: resolve dashboard.html inside allowed root -> macOS open -> Receipt
+LightHouse Brain: verify both receipts -> final response
+```
+
+The Warehouse-inspired paper/ink/red interface keeps the active kernel profile,
+workspace, steps, confirmation cards and Receipts visible. During a run:
 
 ```text
 01  PLAN       understand the requested goal
@@ -70,31 +71,30 @@ During a run, LightHouse exposes the governed lifecycle instead of hiding it:
 08  COMPLETE   return the verified final answer
 ```
 
-Interactive controls include command history, auto-suggestion, Tab completion,
-a bottom status toolbar and local commands that never auto-run:
-
-```text
-/help
-/status
-/capabilities [query]
-/mode auto|system|data
-/init [path]
-/doctor
-/clear
-/exit
-```
-
-Prefix an exact compatibility command with `!`, for example:
-
-```text
-! capabilities git
-```
-
 A single task can also be sent directly:
 
 ```bash
-lh "inspect the failing tests, fix the root cause and verify the result"
+lh "create an HTML dashboard and open it in Safari"
 ```
+
+## Desktop Kernel 0.5
+
+The first Desktop Kernel slice uses macOS Launch Services (`/usr/bin/open`) rather
+than brittle mouse coordinates. It exposes exact capabilities:
+
+- `desktop.browser.open_url.v1`
+- `desktop.file.open.v1`
+- `desktop.app.open.v1`
+
+Targets explicitly constrain project/file roots, URL schemes and applications.
+Opening an HTTP/HTTPS URL or a confined project file is a low-risk direct
+capability. Launching an allow-listed application creates an explicit
+confirmation Operation.
+
+Browser page interaction is intentionally not simulated with mouse coordinates
+in this slice. A future Playwright/CDP adapter can add semantic DOM navigation,
+form filling and downloads behind the same Capability → Operation → Receipt
+contract.
 
 ## Built-in capabilities
 
@@ -119,25 +119,38 @@ lh "inspect the failing tests, fix the root cause and verify the result"
 The native reasoning loop loads project and operation context, selects one exact
 authorized capability, submits an idempotent Operation, pauses for confirmation
 when required, observes the durable Receipt, verifies the result and resumes from
-PostgreSQL after a disconnect. The model never receives raw filesystem, shell or
-database authority.
+PostgreSQL after a disconnect. The model never receives raw filesystem, shell,
+database or desktop authority.
 
 ## Useful commands
 
 ```bash
-lh                         # Swiss interactive terminal
-lh "task"                  # one natural-language task
-lh init [PATH]             # bind a project directory
-lh login                   # replace the model key in macOS Keychain
-lh doctor                  # verify installation
-lh capabilities            # inspect the capability atlas
-lh run ...                 # exact governed operation
-lh operation UUID
-lh receipt UUID
+lh                              # Swiss interactive terminal
+lh "task"                       # one natural-language task
+lh init [PATH]                  # bind System + Desktop targets
+lh login                        # replace the model key in macOS Keychain
+lh doctor                       # verify installation
+lh capabilities                 # inspect all active capabilities
+lh capabilities --kernel desktop
+lh mode auto|data|system|desktop
+lh run desktop.browser.open_url.v1 \
+  --mode desktop \
+  --args-json '{"url":"https://example.com","browser":"Safari"}'
 ```
 
-The older `lh agent ...` form remains as a compatibility alias for scripts, but
-there is no separately installed Agent service.
+Interactive controls include:
+
+```text
+/help
+/status
+/capabilities [query]
+/mode auto|system|data|desktop
+/init [path]
+/doctor
+/receipt OPERATION_ID
+/clear
+/exit
+```
 
 ## Project instructions
 
@@ -152,20 +165,24 @@ LightHouse reads bounded project guidance from:
 
 - The HTTP service binds to `127.0.0.1` by default.
 - API keys are stored in macOS Keychain.
-- Database and SSH secrets are referenced by server environment names.
 - High-risk writes freeze an exact Operation before confirmation.
-- `--yes` cannot bypass Passkey policies.
 - Receipts, not client timeouts, are the source of execution truth.
-- Local project targets are confined to explicit allowed roots.
+- Local System and Desktop targets are confined to explicit allowed roots.
+- Desktop URL schemes and applications are allow-listed per target.
 - SSH host-key checking remains strict by default.
 
-## Remove LightHouse
+## Upgrade an existing installation
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/CPYMSU/LightHouse/main/uninstall-macos.sh | bash
+git -C ~/.lighthouse/app fetch origin main
+git -C ~/.lighthouse/app reset --hard origin/main
+~/.lighthouse/venv/bin/pip install --upgrade ~/.lighthouse/app
+launchctl kickstart -k gui/$(id -u)/com.cpym.su.lighthouse
+lh migrate
 ```
 
-The uninstaller preserves PostgreSQL data rather than deleting it automatically.
+Then enter the project and run `lh`; LightHouse creates its Desktop Target and
+switches the local workspace to `AUTO`.
 
-See `docs/ARCHITECTURE.md`, `docs/AGENT_RUNTIME.md` and
-`docs/TERMINAL_UI.md` for internal contracts.
+See `docs/ARCHITECTURE.md`, `docs/AGENT_RUNTIME.md`, `docs/TERMINAL_UI.md` and
+`docs/DESKTOP_KERNEL.md` for internal contracts.
