@@ -8,6 +8,7 @@ from pathlib import Path
 import shlex
 import subprocess
 import sys
+import time
 from typing import Any
 from urllib.parse import urlencode
 
@@ -118,6 +119,7 @@ def ensure_workspace(client: legacy.Client, config: dict[str, Any], project_path
     project_path = project_path.expanduser().resolve()
     if not project_path.is_dir():
         raise legacy.CLIError(f"project path does not exist: {project_path}")
+    previous_workspace = str(config.get("workspace") or "")
     identity = hashlib.sha256(str(project_path).encode("utf-8")).hexdigest()[:12]
     system_name = f"local-system-{identity}"
     desktop_name = f"local-desktop-{identity}"
@@ -166,6 +168,9 @@ def ensure_workspace(client: legacy.Client, config: dict[str, Any], project_path
             "desktop_target_id": desktop_target["id"],
         })
 
+    if previous_workspace and previous_workspace != str(workspace["id"]):
+        config.pop("conversation_id", None)
+        config.pop("memory_scanned_workspace", None)
     config.update({
         "workspace": workspace["id"],
         "workspace_name": workspace_name,
@@ -178,6 +183,38 @@ def ensure_workspace(client: legacy.Client, config: dict[str, Any], project_path
     return str(workspace["id"])
 
 
+def _scan_memory(
+    client: legacy.Client,
+    config: dict[str, Any],
+    ui: SwissTerminal,
+    *,
+    force: bool = False,
+) -> dict[str, Any] | None:
+    workspace = str(config.get("workspace") or "")
+    if not workspace:
+        return None
+    if not force and config.get("memory_scanned_workspace") == workspace:
+        return None
+    try:
+        with ui.busy("MEMORY / INDEX AUTHORIZED FILES"):
+            result = client.request("POST", "/v1/memory/scan", {
+                "workspace_id": workspace,
+                "max_files": 5000,
+            })
+        config["memory_scanned_workspace"] = workspace
+        _save(config)
+        if force:
+            ui.notice(
+                "MEMORY INDEX",
+                f"Indexed {result.get('indexed', 0)} files; skipped {result.get('skipped', 0)}.",
+                tone="green",
+            )
+        return result
+    except Exception as exc:
+        ui.notice("MEMORY INDEX", f"Index refresh was skipped: {exc}", tone="amber")
+        return None
+
+
 def init_project(path: str | None = None, *, ui: SwissTerminal | None = None) -> int:
     ui = ui or SwissTerminal()
     _path, config = _config()
@@ -185,6 +222,7 @@ def init_project(path: str | None = None, *, ui: SwissTerminal | None = None) ->
     project = Path(path or os.getcwd())
     with ui.busy("WORKSPACE / BIND SYSTEM + DESKTOP"):
         workspace_id = ensure_workspace(client, config, project)
+    _scan_memory(client, config, ui)
     ui.notice("WORKSPACE READY", f"{project.resolve()}\nWorkspace {workspace_id}\nKernels SYSTEM + DESKTOP", tone="green")
     return 0
 
@@ -199,6 +237,8 @@ def doctor(*, ui: SwissTerminal | None = None) -> int:
         "workspace": config.get("workspace"),
         "project_path": config.get("project_path"),
         "desktop_target": config.get("desktop_target"),
+        "conversation": config.get("conversation_id"),
+        "memory_index": config.get("memory_scanned_workspace") == config.get("workspace"),
         "kernel_profile": config.get("mode") or "auto",
     }
     try:
@@ -207,6 +247,28 @@ def doctor(*, ui: SwissTerminal | None = None) -> int:
         checks["api"] = {"ok": False, "error": str(exc)}
     ui.doctor(checks)
     return 0 if checks["control_key"] else 2
+
+
+def _await_operation(
+    client: legacy.Client,
+    operation_id: str,
+    *,
+    timeout: float = 660.0,
+    poll_interval: float = 0.25,
+) -> dict[str, Any]:
+    deadline = time.monotonic() + timeout
+    last: dict[str, Any] | None = None
+    while time.monotonic() < deadline:
+        try:
+            last = client.request("GET", f"/v1/operations/{operation_id}")
+        except Exception:
+            time.sleep(min(1.0, poll_interval * 2))
+            continue
+        status = str((last.get("operation") or {}).get("status") or "")
+        if status in {"succeeded", "failed", "cancelled"}:
+            return last
+        time.sleep(poll_interval)
+    return last or {"operation": {"id": operation_id, "status": "running"}, "receipt": None, "events": []}
 
 
 def _drive_run(client: legacy.Client, snapshot: dict[str, Any], *, actor: str, ui: SwissTerminal) -> dict[str, Any]:
@@ -222,8 +284,29 @@ def _drive_run(client: legacy.Client, snapshot: dict[str, Any], *, actor: str, u
                 ui.notice("PAUSED", "The frozen operation remains pending. Resume it later with its run ID.", tone="amber")
                 return snapshot
             operation = pending.get("operation") or {}
-            with ui.busy("EXECUTE / CONFIRMED OPERATION"):
-                client.request("POST", f"/v1/operations/{operation['id']}/confirm", {"actor": actor})
+            operation_id = str(operation.get("id") or "")
+            try:
+                client.request(
+                    "POST",
+                    f"/v1/operations/{operation_id}/confirm-deferred",
+                    {"actor": actor},
+                )
+            except Exception:
+                # The POST response is not execution truth. Poll the immutable Operation.
+                pass
+            with ui.busy("EXECUTE / WAIT FOR OPERATION RECEIPT"):
+                operation_snapshot = _await_operation(client, operation_id)
+            operation_status = str((operation_snapshot.get("operation") or {}).get("status") or "")
+            if operation_status == "running":
+                ui.notice(
+                    "OPERATION CONTINUES",
+                    f"Operation {operation_id} is still running and remains recoverable. Resume run {run.get('id')} later.",
+                    tone="amber",
+                )
+                return snapshot
+            if operation_snapshot.get("receipt"):
+                ui.receipt(operation_snapshot["receipt"])
+            with ui.busy("BRAIN / CONTINUE FROM RECEIPT"):
                 snapshot = client.request("POST", f"/v1/agent/runs/{run['id']}/advance", {})
             continue
         if status == "waiting_input":
@@ -232,7 +315,11 @@ def _drive_run(client: legacy.Client, snapshot: dict[str, Any], *, actor: str, u
                 ui.notice("PAUSED", "The run is waiting for additional input.", tone="amber")
                 return snapshot
             with ui.busy("BRAIN / CONTINUE WITH INPUT"):
-                snapshot = client.request("POST", f"/v1/agent/runs/{run['id']}/input", {"actor": actor, "message": message})
+                snapshot = client.request(
+                    "POST",
+                    f"/v1/agent/runs/{run['id']}/input",
+                    {"actor": actor, "message": message},
+                )
             continue
         ui.final(snapshot)
         return snapshot
@@ -245,6 +332,7 @@ def run_task(
     client: legacy.Client | None = None,
     config: dict[str, Any] | None = None,
     ui: SwissTerminal | None = None,
+    new_conversation: bool = False,
 ) -> int:
     task = str(task or "").strip()
     if not task:
@@ -256,18 +344,29 @@ def run_task(
     project = Path.cwd().resolve()
     with ui.busy("WORKSPACE / RESOLVE THREE KERNELS"):
         ensure_workspace(client, config, project)
+    _scan_memory(client, config, ui)
     actor = str(config.get("actor") or getpass.getuser())
     ui.task_banner(task)
-    with ui.busy("THINK / BUILD PLAN"):
+    with ui.busy("THINK / BUILD PLAN WITH MEMORY"):
         snapshot = client.request("POST", "/v1/agent/runs", {
             "task": task,
             "workspace_id": config["workspace"],
             "actor": actor,
             "mode": config.get("mode") or "auto",
-            "max_steps": 16,
+            "max_steps": 24,
             "auto_confirm": bool(auto_confirm),
+            "conversation_id": None if new_conversation else config.get("conversation_id"),
+            "new_conversation": bool(new_conversation),
         })
-    _drive_run(client, snapshot, actor=actor, ui=ui)
+    conversation = snapshot.get("conversation") if isinstance(snapshot.get("conversation"), dict) else {}
+    if conversation.get("id"):
+        config["conversation_id"] = conversation["id"]
+        _save(config)
+    snapshot = _drive_run(client, snapshot, actor=actor, ui=ui)
+    conversation = snapshot.get("conversation") if isinstance(snapshot.get("conversation"), dict) else {}
+    if conversation.get("id"):
+        config["conversation_id"] = conversation["id"]
+        _save(config)
     return 0
 
 
@@ -311,6 +410,7 @@ def interactive() -> int:
     current_project = Path.cwd().resolve()
     with ui.busy("WORKSPACE / BIND SYSTEM + DESKTOP"):
         ensure_workspace(client, config, current_project)
+    _scan_memory(client, config, ui)
     _redraw(ui, config)
     history_path = Path.home() / ".lighthouse" / "history"
     session = ui.session(history_path)
@@ -333,6 +433,14 @@ def interactive() -> int:
             continue
         if line == "/help":
             ui.help()
+            continue
+        if line == "/new":
+            config.pop("conversation_id", None)
+            _save(config)
+            ui.notice("NEW CONVERSATION", "The next task starts a new conversation while retaining indexed long-term memory.", tone="cyan")
+            continue
+        if line == "/reindex":
+            _scan_memory(client, config, ui, force=True)
             continue
         if line == "/status":
             _redraw(ui, config)
@@ -383,9 +491,11 @@ def help_text() -> None:
   lh "task"                  run one natural-language task across kernels
   lh init [PATH]             bind System + Desktop targets for a project
   lh login                   store the model key in macOS Keychain
-  lh doctor                  verify the local installation
+  lh doctor                  verify installation, conversation and memory index
   lh capabilities            list governed capabilities
   lh mode desktop            select only the Desktop Kernel
+  /new                       start a new conversation, keep long-term memory
+  /reindex                   refresh the authorized file index
   lh run ...                 execute an exact capability
   lh agent ...               compatibility alias for scripted runs
 """)
