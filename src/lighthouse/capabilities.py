@@ -111,7 +111,7 @@ DEFAULT_CAPABILITIES: tuple[Capability, ...] = (
         "system.file.patch.v1", "file patch",
         "Apply one unified diff to a Git working tree using git apply",
         KernelMode.SYSTEM, "system", "file_patch", Risk.HIGH, ConfirmationMode.EXPLICIT, True,
-        aliases=("apply patch", "修改代碼", "套用補丁"),
+        aliases=("apply patch", "修改代碼", "套用補丁", "創建文件", "製作 html"),
         arguments={
             "patch": {"type": "string", "required": True},
             "cwd": {"type": "string", "required": False},
@@ -192,6 +192,33 @@ DEFAULT_CAPABILITIES: tuple[Capability, ...] = (
             "paths": {"type": "array", "required": False},
             "cwd": {"type": "string", "required": False},
         },
+    ),
+    _cap(
+        "desktop.browser.open_url.v1", "desktop open url",
+        "Open an HTTP, HTTPS or allowed file URL with macOS Launch Services",
+        KernelMode.DESKTOP, "desktop", "open_url", Risk.LOW, ConfirmationMode.DIRECT, False,
+        aliases=("browser open", "open webpage", "打開網頁", "打開瀏覽器", "訪問網站"),
+        arguments={
+            "url": {"type": "string", "required": True},
+            "browser": {"type": "string", "required": False},
+        },
+    ),
+    _cap(
+        "desktop.file.open.v1", "desktop open file",
+        "Open a project file with its default macOS application or an allowed browser",
+        KernelMode.DESKTOP, "desktop", "open_file", Risk.LOW, ConfirmationMode.DIRECT, False,
+        aliases=("open html", "preview file", "打開文件", "打開 html", "預覽網頁"),
+        arguments={
+            "path": {"type": "string", "required": True},
+            "browser": {"type": "string", "required": False},
+        },
+    ),
+    _cap(
+        "desktop.app.open.v1", "desktop open app",
+        "Launch one allow-listed macOS application",
+        KernelMode.DESKTOP, "desktop", "open_app", Risk.NORMAL, ConfirmationMode.EXPLICIT, True,
+        aliases=("open app", "launch application", "打開應用", "啟動軟件"),
+        arguments={"app": {"type": "string", "required": True}},
     ),
 )
 
