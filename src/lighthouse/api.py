@@ -54,11 +54,18 @@ class AgentRunCreate(StrictModel):
     mode: KernelMode = KernelMode.AUTO
     max_steps: int = Field(default=12, ge=1, le=64)
     auto_confirm: bool = False
+    conversation_id: str | None = None
+    new_conversation: bool = False
 
 
 class AgentInput(StrictModel):
     actor: str = Field(min_length=1, max_length=128)
     message: str = Field(min_length=1, max_length=20000)
+
+
+class MemoryScanRequest(StrictModel):
+    workspace_id: str
+    max_files: int = Field(default=5000, ge=1, le=20000)
 
 
 def _target_dict(target) -> dict[str, Any]:
@@ -91,12 +98,18 @@ def create_app(
     kernel = kernel or build_kernel(settings)
     agent_runtime = agent_runtime or build_agent_runtime(settings, kernel)
     repository = kernel.repository
-    app = FastAPI(title="LightHouse OS", version="0.5.0")
+    memory = getattr(agent_runtime, "memory", None)
+    app = FastAPI(title="LightHouse OS", version="0.7.0")
 
     def require_operator(authorization: str | None = Header(default=None)) -> None:
         expected = "Bearer " + settings.api_key
         if not authorization or not hmac.compare_digest(authorization, expected):
             raise HTTPException(status_code=401, detail="invalid operator credential")
+
+    def require_memory():
+        if memory is None:
+            raise HTTPException(status_code=409, detail="Memory Fabric is not configured")
+        return memory
 
     @app.exception_handler(KeyError)
     async def key_error(_request, exc: KeyError):
@@ -120,7 +133,7 @@ def create_app(
 
     @app.get("/healthz")
     def health() -> dict[str, str]:
-        return {"status": "ok"}
+        return {"status": "ok", "version": "0.7.0"}
 
     @app.post("/v1/admin/migrate", dependencies=[Depends(require_operator)])
     def migrate() -> dict[str, bool]:
@@ -192,6 +205,10 @@ def create_app(
     def confirm_operation(operation_id: str, payload: ConfirmRequest) -> dict[str, Any]:
         return kernel.confirm(operation_id, actor=payload.actor)
 
+    @app.post("/v1/operations/{operation_id}/confirm-deferred", dependencies=[Depends(require_operator)])
+    def confirm_operation_deferred(operation_id: str, payload: ConfirmRequest) -> dict[str, Any]:
+        return kernel.confirm_deferred(operation_id, actor=payload.actor)
+
     @app.get("/v1/operations/{operation_id}/events", dependencies=[Depends(require_operator)])
     def get_events(operation_id: str) -> dict[str, Any]:
         items = repository.list_events(operation_id)
@@ -223,6 +240,8 @@ def create_app(
             mode=payload.mode,
             max_steps=payload.max_steps,
             auto_confirm=payload.auto_confirm,
+            conversation_id=payload.conversation_id,
+            new_conversation=payload.new_conversation,
         )
 
     @app.get("/v1/agent/runs/{run_id}", dependencies=[Depends(require_operator)])
@@ -246,5 +265,40 @@ def create_app(
                 yield json.dumps(item, ensure_ascii=False, separators=(",", ":")) + "\n"
 
         return StreamingResponse(generate(), media_type="application/x-ndjson")
+
+    @app.post("/v1/memory/scan", dependencies=[Depends(require_operator)])
+    def scan_memory(payload: MemoryScanRequest) -> dict[str, Any]:
+        fabric = require_memory()
+        workspace = repository.get_workspace(payload.workspace_id)
+        if not workspace.system_target_id:
+            raise ValueError("workspace has no system target to index")
+        target = repository.get_target(workspace.system_target_id)
+        if target.kind != TargetKind.SYSTEM:
+            raise ValueError("workspace system target is invalid")
+        roots = target.config.get("allowed_roots") or [target.config.get("default_cwd") or "/"]
+        return fabric.scan_workspace(workspace_id=workspace.id, roots=roots, max_files=payload.max_files)
+
+    @app.get("/v1/memory/files", dependencies=[Depends(require_operator)])
+    def memory_files(workspace_id: str, q: str = "", limit: int = 20) -> dict[str, Any]:
+        fabric = require_memory()
+        items = fabric.search_files(workspace_id=workspace_id, query=q, limit=limit)
+        return {"items": items, "count": len(items)}
+
+    @app.get("/v1/memory/context", dependencies=[Depends(require_operator)])
+    def memory_context(
+        workspace_id: str,
+        actor: str,
+        q: str = "",
+        conversation_id: str | None = None,
+    ) -> dict[str, Any]:
+        fabric = require_memory()
+        return fabric.context(
+            workspace_id=workspace_id,
+            actor=actor,
+            conversation_id=conversation_id,
+            query=q,
+            message_limit=24,
+            file_limit=24,
+        )
 
     return app
