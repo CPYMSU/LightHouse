@@ -5,9 +5,10 @@ from importlib.resources import files
 from .agent_adapter import AgentRepositoryAdapter
 from .agent_store import PostgresAgentStore
 from .brain import LightHouseBrain
-from .capabilities import CapabilityRegistry
+from .capabilities import CapabilityRegistry, DEFAULT_CAPABILITIES
 from .config import Settings
 from .executors import DesktopExecutor, PostgresExecutor, ProjectFileExecutor, SystemExecutor
+from .extra_capabilities import PROJECT_FILE_WRITE_CAPABILITY
 from .kernel import OperationKernel
 from .provider import DisabledProvider, OpenAICompatibleProvider
 from .repository import PostgresRepository
@@ -21,9 +22,10 @@ def build_kernel(settings: Settings, *, migrate: bool = True) -> OperationKernel
     repository = PostgresRepository(settings.database_url)
     if migrate:
         repository.migrate(migration_sql())
+    registry = CapabilityRegistry((*DEFAULT_CAPABILITIES, PROJECT_FILE_WRITE_CAPABILITY))
     return OperationKernel(
         repository,
-        CapabilityRegistry(),
+        registry,
         {
             "postgres": PostgresExecutor(),
             "system": SystemExecutor(),
