@@ -16,7 +16,7 @@ class FakeClient:
         if method == "GET" and path == "/v1/workspaces":
             return {"items": self.workspaces}
         if method == "POST" and path == "/v1/targets":
-            value = {"id": "target-1", **payload}
+            value = {"id": f"target-{len(self.targets) + 1}", **payload}
             self.targets.append(value)
             return value
         if method == "POST" and path == "/v1/workspaces":
@@ -26,15 +26,22 @@ class FakeClient:
         raise AssertionError((method, path, payload))
 
 
-def test_ensure_workspace_binds_current_project(tmp_path, monkeypatch):
+def test_ensure_workspace_binds_system_and_desktop(tmp_path, monkeypatch):
     config = {}
     client = FakeClient()
     monkeypatch.setattr(terminal, "_save", lambda value: None)
+
     workspace = terminal.ensure_workspace(client, config, Path(tmp_path))
+
     assert workspace == "workspace-1"
     assert config["workspace"] == "workspace-1"
     assert config["project_path"] == str(tmp_path.resolve())
+    assert config["mode"] == "auto"
+    assert [item["kind"] for item in client.targets] == ["system", "desktop"]
     assert client.targets[0]["config"]["allowed_roots"] == [str(tmp_path.resolve())]
+    assert client.targets[1]["config"]["allowed_schemes"] == ["http", "https", "file"]
+    assert client.workspaces[0]["system_target_id"] == "target-1"
+    assert client.workspaces[0]["desktop_target_id"] == "target-2"
 
 
 def test_project_test_command_detects_python(tmp_path):

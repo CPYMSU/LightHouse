@@ -8,6 +8,7 @@ from .models import TargetKind
 
 _ENV = re.compile(r"^[A-Z_][A-Z0-9_]{0,127}$")
 _HOST = re.compile(r"^[A-Za-z0-9._:-]{1,255}$")
+_APP = re.compile(r"^[^/\x00\r\n]{1,160}$")
 _DATA_KEYS = {"dsn_env", "read_only"}
 _SYSTEM_KEYS = {
     "transport",
@@ -25,6 +26,14 @@ _SYSTEM_KEYS = {
     "project_instruction_files",
     "test_command",
 }
+_DESKTOP_KEYS = {
+    "platform",
+    "default_cwd",
+    "allowed_roots",
+    "allowed_apps",
+    "allowed_schemes",
+    "browser",
+}
 
 
 def _absolute_path(value: Any, field: str) -> str:
@@ -34,20 +43,61 @@ def _absolute_path(value: Any, field: str) -> str:
     return item
 
 
+def _string_array(value: Any, field: str, *, pattern: re.Pattern[str] | None = None) -> list[str]:
+    if not isinstance(value, list) or not value:
+        raise ValueError(f"{field} must be a non-empty array")
+    items: list[str] = []
+    for raw in value:
+        item = str(raw or "").strip()
+        if not item or "\x00" in item or (pattern and not pattern.fullmatch(item)):
+            raise ValueError(f"{field} contains an invalid value")
+        items.append(item)
+    return items
+
+
 def validate_target_config(kind: TargetKind, value: dict[str, Any]) -> dict[str, Any]:
     if not isinstance(value, dict):
         raise ValueError("target config must be an object")
     config = dict(value)
-    allowed = _DATA_KEYS if kind == TargetKind.DATA else _SYSTEM_KEYS
+    if kind == TargetKind.DATA:
+        allowed = _DATA_KEYS
+    elif kind == TargetKind.SYSTEM:
+        allowed = _SYSTEM_KEYS
+    else:
+        allowed = _DESKTOP_KEYS
     unknown = sorted(set(config) - allowed)
     if unknown:
         raise ValueError("unsupported target config fields: " + ", ".join(unknown))
+
     if kind == TargetKind.DATA:
         env_name = str(config.get("dsn_env") or "").strip()
         if not _ENV.fullmatch(env_name):
             raise ValueError("data target requires a valid dsn_env name")
         config["dsn_env"] = env_name
         config["read_only"] = bool(config.get("read_only", False))
+        return config
+
+    if kind == TargetKind.DESKTOP:
+        platform = str(config.get("platform") or "macos").strip().lower()
+        if platform != "macos":
+            raise ValueError("desktop target platform must be macos")
+        config["platform"] = platform
+        config["default_cwd"] = _absolute_path(config.get("default_cwd") or "/", "default_cwd")
+        roots = config.get("allowed_roots") or [config["default_cwd"]]
+        config["allowed_roots"] = [
+            _absolute_path(item, "allowed_roots item") for item in _string_array(roots, "allowed_roots")
+        ]
+        apps = config.get("allowed_apps") or ["Safari", "Google Chrome", "Firefox", "Arc", "Finder"]
+        config["allowed_apps"] = _string_array(apps, "allowed_apps", pattern=_APP)
+        schemes = config.get("allowed_schemes") or ["http", "https", "file"]
+        normalized_schemes = [str(item).strip().lower() for item in _string_array(schemes, "allowed_schemes")]
+        if any(not re.fullmatch(r"[a-z][a-z0-9+.-]{0,31}", item) for item in normalized_schemes):
+            raise ValueError("allowed_schemes contains an invalid URL scheme")
+        config["allowed_schemes"] = normalized_schemes
+        browser = str(config.get("browser") or "default").strip()
+        if browser.lower() != "default" and browser not in config["allowed_apps"]:
+            raise ValueError("desktop browser must be default or an allowed application")
+        config["browser"] = browser or "default"
         return config
 
     transport = str(config.get("transport") or "local").strip().lower()

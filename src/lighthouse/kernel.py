@@ -18,11 +18,20 @@ class OperationKernel:
         if request.mode not in {KernelMode.AUTO, capability.kernel}:
             raise ValueError(f"capability requires {capability.kernel.value} mode")
         workspace = self.repository.get_workspace(request.workspace_id)
-        target_id = workspace.data_target_id if capability.kernel == KernelMode.DATA else workspace.system_target_id
+        target_by_kernel = {
+            KernelMode.DATA: workspace.data_target_id,
+            KernelMode.SYSTEM: workspace.system_target_id,
+            KernelMode.DESKTOP: workspace.desktop_target_id,
+        }
+        target_id = target_by_kernel.get(capability.kernel)
         if not target_id:
             raise ValueError(f"workspace has no {capability.kernel.value} target")
         target = self.repository.get_target(target_id)
-        expected_kind = TargetKind.DATA if capability.kernel == KernelMode.DATA else TargetKind.SYSTEM
+        expected_kind = {
+            KernelMode.DATA: TargetKind.DATA,
+            KernelMode.SYSTEM: TargetKind.SYSTEM,
+            KernelMode.DESKTOP: TargetKind.DESKTOP,
+        }[capability.kernel]
         if target.kind != expected_kind:
             raise ValueError("workspace target kind does not match capability kernel")
         envelope = request.envelope(target_id=target.id, capability=capability)

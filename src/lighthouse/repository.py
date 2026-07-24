@@ -13,7 +13,7 @@ class Repository(Protocol):
     def create_target(self, *, name: str, kind: TargetKind, config: dict[str, Any]) -> Target: ...
     def list_targets(self) -> list[Target]: ...
     def get_target(self, target_id: str) -> Target: ...
-    def create_workspace(self, *, name: str, data_target_id: str | None, system_target_id: str | None) -> Workspace: ...
+    def create_workspace(self, *, name: str, data_target_id: str | None, system_target_id: str | None, desktop_target_id: str | None = None) -> Workspace: ...
     def list_workspaces(self) -> list[Workspace]: ...
     def get_workspace(self, workspace_id: str) -> Workspace: ...
     def create_operation(self, *, operation_id: str, workspace_id: str, target_id: str, capability: str, kernel: KernelMode, actor: str, envelope: dict[str, Any], idempotency_key: str | None) -> OperationView: ...
@@ -58,14 +58,24 @@ class InMemoryRepository:
         except KeyError as exc:
             raise KeyError("target not found") from exc
 
-    def create_workspace(self, *, name: str, data_target_id: str | None, system_target_id: str | None) -> Workspace:
+    def create_workspace(self, *, name: str, data_target_id: str | None, system_target_id: str | None, desktop_target_id: str | None = None) -> Workspace:
         with self._lock:
             if any(item.name == name for item in self.workspaces.values()):
                 raise ValueError("workspace name already exists")
-            for target_id, kind in ((data_target_id, TargetKind.DATA), (system_target_id, TargetKind.SYSTEM)):
+            for target_id, kind in (
+                (data_target_id, TargetKind.DATA),
+                (system_target_id, TargetKind.SYSTEM),
+                (desktop_target_id, TargetKind.DESKTOP),
+            ):
                 if target_id is not None and self.get_target(target_id).kind != kind:
                     raise ValueError(f"workspace {kind.value} target has the wrong kind")
-            workspace = Workspace(id=str(uuid4()), name=name, data_target_id=data_target_id, system_target_id=system_target_id)
+            workspace = Workspace(
+                id=str(uuid4()),
+                name=name,
+                data_target_id=data_target_id,
+                system_target_id=system_target_id,
+                desktop_target_id=desktop_target_id,
+            )
             self.workspaces[workspace.id] = workspace
             return workspace
 
@@ -88,7 +98,20 @@ class InMemoryRepository:
                             raise ValueError("idempotency key is already bound to another request")
                         return item
             now = utc_now()
-            view = OperationView(id=operation_id, status=OperationStatus.CREATED, capability=capability, kernel=kernel, target_id=target_id, workspace_id=workspace_id, actor=actor, envelope=envelope, envelope_hash=digest_json(envelope), request_hash=request_hash, created_at=now, updated_at=now)
+            view = OperationView(
+                id=operation_id,
+                status=OperationStatus.CREATED,
+                capability=capability,
+                kernel=kernel,
+                target_id=target_id,
+                workspace_id=workspace_id,
+                actor=actor,
+                envelope=envelope,
+                envelope_hash=digest_json(envelope),
+                request_hash=request_hash,
+                created_at=now,
+                updated_at=now,
+            )
             self.operations[operation_id] = view
             self.events[operation_id] = []
             return view
@@ -162,7 +185,14 @@ class PostgresRepository:
 
     @staticmethod
     def _workspace(row: dict[str, Any]) -> Workspace:
-        return Workspace(id=str(row["id"]), name=row["name"], data_target_id=str(row["data_target_id"]) if row["data_target_id"] else None, system_target_id=str(row["system_target_id"]) if row["system_target_id"] else None)
+        return Workspace(
+            id=str(row["id"]),
+            name=row["name"],
+            data_target_id=str(row["data_target_id"]) if row["data_target_id"] else None,
+            system_target_id=str(row["system_target_id"]) if row["system_target_id"] else None,
+            desktop_target_id=str(row.get("desktop_target_id")) if row.get("desktop_target_id") else None,
+            config=row.get("config") or {},
+        )
 
     @staticmethod
     def _operation(row: dict[str, Any]) -> OperationView:
@@ -174,7 +204,10 @@ class PostgresRepository:
 
     def create_target(self, *, name: str, kind: TargetKind, config: dict[str, Any]) -> Target:
         with self._connect() as connection:
-            row = connection.execute("INSERT INTO lh_targets(id,name,kind,config) VALUES (%s,%s,%s,%s::jsonb) RETURNING *", (str(uuid4()), name, kind.value, json.dumps(config))).fetchone()
+            row = connection.execute(
+                "INSERT INTO lh_targets(id,name,kind,config) VALUES (%s,%s,%s,%s::jsonb) RETURNING *",
+                (str(uuid4()), name, kind.value, json.dumps(config)),
+            ).fetchone()
         return self._target(row)
 
     def list_targets(self) -> list[Target]:
@@ -189,9 +222,12 @@ class PostgresRepository:
             raise KeyError("target not found")
         return self._target(row)
 
-    def create_workspace(self, *, name: str, data_target_id: str | None, system_target_id: str | None) -> Workspace:
+    def create_workspace(self, *, name: str, data_target_id: str | None, system_target_id: str | None, desktop_target_id: str | None = None) -> Workspace:
         with self._connect() as connection:
-            row = connection.execute("INSERT INTO lh_workspaces(id,name,data_target_id,system_target_id) VALUES (%s,%s,%s,%s) RETURNING *", (str(uuid4()), name, data_target_id, system_target_id)).fetchone()
+            row = connection.execute(
+                "INSERT INTO lh_workspaces(id,name,data_target_id,system_target_id,desktop_target_id) VALUES (%s,%s,%s,%s,%s) RETURNING *",
+                (str(uuid4()), name, data_target_id, system_target_id, desktop_target_id),
+            ).fetchone()
         return self._workspace(row)
 
     def list_workspaces(self) -> list[Workspace]:
@@ -210,10 +246,13 @@ class PostgresRepository:
         envelope_hash = digest_json(envelope)
         request_hash = _request_hash(envelope)
         with self._connect() as connection:
-            row = connection.execute("""INSERT INTO lh_operations(id,workspace_id,target_id,capability,kernel,actor,status,envelope,envelope_hash,request_hash,idempotency_key)
-                VALUES (%s,%s,%s,%s,%s,%s,%s,%s::jsonb,%s,%s,%s)
-                ON CONFLICT (idempotency_key) DO UPDATE SET idempotency_key=EXCLUDED.idempotency_key
-                RETURNING *""", (operation_id, workspace_id, target_id, capability, kernel.value, actor, OperationStatus.CREATED.value, json.dumps(envelope), envelope_hash, request_hash, idempotency_key)).fetchone()
+            row = connection.execute(
+                """INSERT INTO lh_operations(id,workspace_id,target_id,capability,kernel,actor,status,envelope,envelope_hash,request_hash,idempotency_key)
+                   VALUES (%s,%s,%s,%s,%s,%s,%s,%s::jsonb,%s,%s,%s)
+                   ON CONFLICT (idempotency_key) DO UPDATE SET idempotency_key=EXCLUDED.idempotency_key
+                   RETURNING *""",
+                (operation_id, workspace_id, target_id, capability, kernel.value, actor, OperationStatus.CREATED.value, json.dumps(envelope), envelope_hash, request_hash, idempotency_key),
+            ).fetchone()
             if row["request_hash"] != request_hash:
                 raise ValueError("idempotency key is already bound to another request")
         return self._operation(row)
@@ -242,9 +281,12 @@ class PostgresRepository:
             locked = connection.execute("SELECT id FROM lh_operations WHERE id=%s FOR UPDATE", (operation_id,)).fetchone()
             if not locked:
                 raise KeyError("operation not found")
-            row = connection.execute("""INSERT INTO lh_operation_events(operation_id,sequence,event_type,payload)
-                SELECT %s,COALESCE(MAX(sequence),0)+1,%s,%s::jsonb FROM lh_operation_events WHERE operation_id=%s
-                RETURNING sequence,event_type,payload,created_at""", (operation_id, event_type, json.dumps(payload), operation_id)).fetchone()
+            row = connection.execute(
+                """INSERT INTO lh_operation_events(operation_id,sequence,event_type,payload)
+                   SELECT %s,COALESCE(MAX(sequence),0)+1,%s,%s::jsonb FROM lh_operation_events WHERE operation_id=%s
+                   RETURNING sequence,event_type,payload,created_at""",
+                (operation_id, event_type, json.dumps(payload), operation_id),
+            ).fetchone()
         return {"sequence": row["sequence"], "type": row["event_type"], "payload": row["payload"], "created_at": row["created_at"].isoformat()}
 
     def list_events(self, operation_id: str) -> list[dict[str, Any]]:
@@ -256,10 +298,13 @@ class PostgresRepository:
     def save_receipt(self, operation_id: str, *, ok: bool, result: dict[str, Any]) -> dict[str, Any]:
         result_hash = digest_json(result)
         with self._connect() as connection:
-            row = connection.execute("""INSERT INTO lh_operation_receipts(operation_id,ok,result,result_hash)
-                VALUES (%s,%s,%s::jsonb,%s)
-                ON CONFLICT (operation_id) DO UPDATE SET operation_id=EXCLUDED.operation_id
-                RETURNING operation_id,ok,result,result_hash,created_at""", (operation_id, ok, json.dumps(result), result_hash)).fetchone()
+            row = connection.execute(
+                """INSERT INTO lh_operation_receipts(operation_id,ok,result,result_hash)
+                   VALUES (%s,%s,%s::jsonb,%s)
+                   ON CONFLICT (operation_id) DO UPDATE SET operation_id=EXCLUDED.operation_id
+                   RETURNING operation_id,ok,result,result_hash,created_at""",
+                (operation_id, ok, json.dumps(result), result_hash),
+            ).fetchone()
             if row["result_hash"] != result_hash:
                 raise ValueError("operation receipt is immutable")
         return {"operation_id": str(row["operation_id"]), "ok": row["ok"], "result": row["result"], "result_hash": row["result_hash"], "created_at": row["created_at"].isoformat()}

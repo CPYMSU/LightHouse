@@ -15,12 +15,14 @@ from uuid import UUID, uuid4
 class KernelMode(StrEnum):
     DATA = "data"
     SYSTEM = "system"
+    DESKTOP = "desktop"
     AUTO = "auto"
 
 
 class TargetKind(StrEnum):
     DATA = "data"
     SYSTEM = "system"
+    DESKTOP = "desktop"
 
 
 class Risk(StrEnum):
@@ -132,6 +134,7 @@ class Workspace:
     name: str
     data_target_id: str | None
     system_target_id: str | None
+    desktop_target_id: str | None = None
     config: dict[str, Any] = field(default_factory=dict)
 
 
