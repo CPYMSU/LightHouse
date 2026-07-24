@@ -41,12 +41,53 @@ cd /path/to/your/project
 lh
 ```
 
-LightHouse binds the current project and opens its integrated terminal:
+## Swiss Super Terminal
+
+The native terminal follows the visual discipline of the Warehouse OS 2.0 Super
+Terminal: paper/ink/red contrast, strict grids, compact uppercase labels, visible
+kernel state and receipt-backed execution steps.
 
 ```text
-lh> inspect this repository and explain its architecture
-lh> run the tests and identify the root cause
-lh> fix the failure, rerun tests and show me the diff
+LH  /  LIGHTHOUSE OS                       FOLIO 0.4 · AI OPERATING TERMINAL
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+KERNEL        WORKSPACE        BRAIN          CONTROL
+SYSTEM        project-local    READY          LOCAL / SECURE
+PROJECT  /Users/you/project
+────────────────────────────────────────────────────────────────────────────
+
+LH / SYSTEM / project  ›
+```
+
+During a run, LightHouse exposes the governed lifecycle instead of hiding it:
+
+```text
+01  PLAN       understand the requested goal
+02  CONTEXT    index project instructions and source state
+03  THINK      select one exact authorized capability
+04  EXECUTE    create and dispatch an immutable Operation
+05  CONFIRM    show a frozen action card when required
+06  VERIFY     read the durable Receipt and test the outcome
+08  COMPLETE   return the verified final answer
+```
+
+Interactive controls include command history, auto-suggestion, Tab completion,
+a bottom status toolbar and local commands that never auto-run:
+
+```text
+/help
+/status
+/capabilities [query]
+/mode auto|system|data
+/init [path]
+/doctor
+/clear
+/exit
+```
+
+Prefix an exact compatibility command with `!`, for example:
+
+```text
+! capabilities git
 ```
 
 A single task can also be sent directly:
@@ -84,7 +125,7 @@ database authority.
 ## Useful commands
 
 ```bash
-lh                         # integrated interactive terminal
+lh                         # Swiss interactive terminal
 lh "task"                  # one natural-language task
 lh init [PATH]             # bind a project directory
 lh login                   # replace the model key in macOS Keychain
@@ -126,4 +167,5 @@ curl -fsSL https://raw.githubusercontent.com/CPYMSU/LightHouse/main/uninstall-ma
 
 The uninstaller preserves PostgreSQL data rather than deleting it automatically.
 
-See `docs/ARCHITECTURE.md` and `docs/AGENT_RUNTIME.md` for internal contracts.
+See `docs/ARCHITECTURE.md`, `docs/AGENT_RUNTIME.md` and
+`docs/TERMINAL_UI.md` for internal contracts.
