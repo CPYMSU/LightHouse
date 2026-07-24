@@ -8,7 +8,7 @@ import stat
 import sys
 import tempfile
 from typing import Any
-from urllib.parse import urlsplit
+from urllib.parse import urlencode, urlsplit
 
 import httpx
 
@@ -103,7 +103,7 @@ def build_parser() -> argparse.ArgumentParser:
     caps = sub.add_parser("capabilities")
     caps.add_argument("query", nargs="?", default="")
     caps.add_argument("--kernel", choices=("auto", "data", "system"), default="auto")
-    targets = sub.add_parser("targets")
+    sub.add_parser("targets")
     target_add = sub.add_parser("target-add")
     target_add.add_argument("name")
     target_add.add_argument("--kind", choices=("data", "system"), required=True)
@@ -121,6 +121,8 @@ def build_parser() -> argparse.ArgumentParser:
     use.add_argument("mode", choices=("auto", "data", "system"))
     use.add_argument("workspace")
     use.add_argument("--actor")
+    mode = sub.add_parser("mode")
+    mode.add_argument("mode", choices=("auto", "data", "system"))
     run = sub.add_parser("run")
     run.add_argument("capability")
     run.add_argument("--args-json", default="{}")
@@ -147,6 +149,10 @@ def context(args, config: dict[str, Any]) -> tuple[str, str, str]:
     return str(workspace), str(mode), str(actor)
 
 
+def selected_actor(args, config: dict[str, Any]) -> str:
+    return str(getattr(args, "actor", None) or config.get("actor") or os.environ.get("LIGHTHOUSE_ACTOR") or "operator")
+
+
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     path = config_path(args)
@@ -155,11 +161,13 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "status":
             print_json({"url": args.url or os.environ.get("LIGHTHOUSE_URL") or config.get("url") or "http://127.0.0.1:8787", "workspace": config.get("workspace"), "mode": config.get("mode", "auto"), "actor": config.get("actor", "operator"), "api_key_stored": False})
             return 0
-        if args.command in {"configure", "use"}:
+        if args.command in {"configure", "use", "mode"}:
             if args.command == "use":
                 config.update({"workspace": args.workspace, "mode": args.mode})
                 if args.actor:
                     config["actor"] = args.actor
+            elif args.command == "mode":
+                config["mode"] = args.mode
             else:
                 for key in ("workspace", "mode", "actor"):
                     value = getattr(args, key)
@@ -175,7 +183,8 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "migrate":
             print_json(client.request("POST", "/v1/admin/migrate", {}))
         elif args.command == "capabilities":
-            print_json(client.request("GET", f"/v1/capabilities?q={httpx.QueryParams({'q': args.query})['q']}&kernel={args.kernel}"))
+            query = urlencode({"q": args.query, "kernel": args.kernel})
+            print_json(client.request("GET", "/v1/capabilities?" + query))
         elif args.command == "targets":
             print_json(client.request("GET", "/v1/targets"))
         elif args.command == "target-add":
@@ -191,8 +200,7 @@ def main(argv: list[str] | None = None) -> int:
                 value = client.request("POST", f"/v1/operations/{value['operation']['id']}/confirm", {"actor": actor})
             print_json(value)
         elif args.command == "confirm":
-            _workspace, _mode, actor = context(args, config)
-            print_json(client.request("POST", f"/v1/operations/{args.operation_id}/confirm", {"actor": actor}))
+            print_json(client.request("POST", f"/v1/operations/{args.operation_id}/confirm", {"actor": selected_actor(args, config)}))
         elif args.command == "operation":
             print_json(client.request("GET", f"/v1/operations/{args.operation_id}"))
         elif args.command == "events":
