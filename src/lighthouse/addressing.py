@@ -5,6 +5,12 @@ from typing import Any
 
 from .models import KernelMode
 
+_REFERENTIAL_MARKERS = (
+    "繼續", "继续", "再", "剛才", "刚才", "之前", "這個", "这个", "那個", "那个",
+    "它", "豐富", "丰富", "優化", "优化", "continue", "again", "more", "richer",
+    "this", "that", "previous", "before",
+)
+
 
 class ExecutionAddressResolver:
     """Resolve model-proposed paths against durable, observed locators."""
@@ -123,7 +129,11 @@ class ExecutionAddressResolver:
     def _active_subject(memory: dict[str, Any]) -> Path | None:
         task = memory.get("active_task") if isinstance(memory.get("active_task"), dict) else {}
         conversation = memory.get("conversation") if isinstance(memory.get("conversation"), dict) else {}
-        raw = task.get("subject") or conversation.get("active_subject_value")
+        raw = task.get("subject")
+        if not raw:
+            goal = str(task.get("goal") or "").lower()
+            if any(marker in goal for marker in _REFERENTIAL_MARKERS):
+                raw = conversation.get("active_subject_value")
         if not raw:
             return None
         try:
