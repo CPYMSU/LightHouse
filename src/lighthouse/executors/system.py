@@ -177,7 +177,8 @@ class SystemExecutor:
     def _project_context(self, target: Target, arguments: dict[str, Any]) -> ExecutionResult:
         cwd = self._cwd(target, arguments); max_files = max(1, min(int(arguments.get("max_files") or 500), 5000)); max_instruction_bytes = max(1024, min(int(arguments.get("max_instruction_bytes") or 131072), 1_000_000)); instructions, used = [], 0
         for name in target.config.get("project_instruction_files") or _DEFAULT_INSTRUCTION_FILES:
-            probe = self._run(target, f"test -f -- {shlex.quote(name)} && head -c {max_instruction_bytes} -- {shlex.quote(name)} || true", cwd=cwd); content = str(probe.result.get("stdout") or "")
+            quoted = shlex.quote(name)
+            probe = self._run(target, f"test -f {quoted} && head -c {max_instruction_bytes} -- {quoted} || true", cwd=cwd); content = str(probe.result.get("stdout") or "")
             if not content: continue
             remaining = max_instruction_bytes - used
             if remaining <= 0: break
