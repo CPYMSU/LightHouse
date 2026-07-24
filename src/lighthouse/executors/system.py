@@ -13,16 +13,12 @@ from ..models import Capability, ExecutionResult, Target
 
 
 _SERVICE = re.compile(r"^[A-Za-z0-9_.@:-]{1,160}$")
+_TYPED_DIRECTORY_COMMAND = re.compile(r"^\s*(?:command\s+)?(?:sudo\s+)?mkdir(?:\s|$)", re.IGNORECASE)
 _MAX_PATCH_BYTES = 2_000_000
 
 
 class SystemExecutor:
-    """Local/OpenSSH Linux executor.
-
-    Typed read operations are converted to fixed command shapes. Arbitrary shell,
-    patch, test and commit operations remain capabilities that require the
-    Operation Kernel's confirmation policy before this executor is reached.
-    """
+    """Local/OpenSSH Linux and macOS executor."""
 
     def execute(
         self,
@@ -52,11 +48,7 @@ class SystemExecutor:
         if operation == "journal_read":
             service = self._service(arguments)
             lines = max(1, min(int(arguments.get("lines") or 200), 5000))
-            return self._run(
-                target,
-                "journalctl --no-pager -o short-iso "
-                f"-n {lines} -u {shlex.quote(service)}",
-            )
+            return self._run(target, "journalctl --no-pager -o short-iso " f"-n {lines} -u {shlex.quote(service)}")
         if operation == "git_status":
             cwd = self._cwd(target, arguments)
             return self._run(target, "git status --short --branch", cwd=cwd)
@@ -102,6 +94,10 @@ class SystemExecutor:
         roots = self._configured_roots(target)
         if not any(cwd == root or cwd.startswith(root.rstrip("/") + "/") for root in roots):
             raise PermissionError("cwd is outside the target's allowed roots")
+        if str(target.config.get("transport") or "local").lower() == "local":
+            path = Path(cwd)
+            if not path.exists() or not path.is_dir() or path.is_symlink():
+                raise ValueError("cwd must be a real regular directory")
         return cwd
 
     @staticmethod
@@ -129,17 +125,7 @@ class SystemExecutor:
         user = str(config.get("user") or "").strip()
         if not host or not user:
             raise ValueError("SSH target requires host and user")
-        argv = [
-            "ssh",
-            "-p",
-            str(int(config.get("port") or 22)),
-            "-o",
-            "BatchMode=yes",
-            "-o",
-            "ConnectTimeout=15",
-            "-o",
-            "IdentitiesOnly=yes",
-        ]
+        argv = ["ssh", "-p", str(int(config.get("port") or 22)), "-o", "BatchMode=yes", "-o", "ConnectTimeout=15", "-o", "IdentitiesOnly=yes"]
         strict = bool(config.get("strict_host_key", True))
         argv.extend(["-o", f"StrictHostKeyChecking={'yes' if strict else 'accept-new'}"])
         identity_env = str(config.get("identity_file_env") or "").strip()
@@ -163,15 +149,7 @@ class SystemExecutor:
         argv.extend(["--", f"{user}@{host}"])
         return argv
 
-    def _run(
-        self,
-        target: Target,
-        script: str,
-        *,
-        cwd: str | None = None,
-        timeout: int | None = None,
-        stdin_text: str | None = None,
-    ) -> ExecutionResult:
+    def _run(self, target: Target, script: str, *, cwd: str | None = None, timeout: int | None = None, stdin_text: str | None = None) -> ExecutionResult:
         cwd = cwd or self._cwd(target, {})
         timeout = timeout or int(target.config.get("timeout") or 600)
         shell = str(target.config.get("shell") or "/bin/bash")
@@ -184,19 +162,9 @@ class SystemExecutor:
             argv = [*self._ssh_argv(target), remote]
         else:
             raise ValueError("system target transport must be local or ssh")
-
         started = time.monotonic()
         try:
-            process = subprocess.run(
-                argv,
-                input=stdin_text,
-                text=True,
-                encoding="utf-8",
-                errors="replace",
-                capture_output=True,
-                timeout=timeout,
-                check=False,
-            )
+            process = subprocess.run(argv, input=stdin_text, text=True, encoding="utf-8", errors="replace", capture_output=True, timeout=timeout, check=False)
             exit_code = process.returncode
             stdout = process.stdout or ""
             stderr = process.stderr or ""
@@ -209,50 +177,31 @@ class SystemExecutor:
             exit_code = 127
             stdout = ""
             stderr = str(exc)
-
         limit = self._max_output(target)
         stdout, stdout_truncated = self._truncate(stdout, limit)
         stderr, stderr_truncated = self._truncate(stderr, limit)
-        result = {
-            "transport": transport,
-            "cwd": cwd,
-            "exit_code": exit_code,
-            "stdout": stdout,
-            "stderr": stderr,
-            "stdout_truncated": stdout_truncated,
-            "stderr_truncated": stderr_truncated,
-            "duration_ms": int((time.monotonic() - started) * 1000),
-        }
+        result = {"transport": transport, "cwd": cwd, "exit_code": exit_code, "stdout": stdout, "stderr": stderr, "stdout_truncated": stdout_truncated, "stderr_truncated": stderr_truncated, "duration_ms": int((time.monotonic() - started) * 1000)}
         return ExecutionResult(ok=exit_code == 0, result=result, exit_code=exit_code)
 
     def _shell_exec(self, target: Target, arguments: dict[str, Any]) -> ExecutionResult:
         command = str(arguments.get("command") or "").strip()
         if not command or "\x00" in command:
             raise ValueError("command is required")
-        return self._run(
-            target,
-            command,
-            cwd=self._cwd(target, arguments),
-            timeout=self._timeout(target, arguments),
-        )
+        if _TYPED_DIRECTORY_COMMAND.match(command):
+            raise ValueError("mkdir must use system.directory.create.v1 so the path is typed and grounded")
+        return self._run(target, command, cwd=self._cwd(target, arguments), timeout=self._timeout(target, arguments))
 
     def _test_run(self, target: Target, arguments: dict[str, Any]) -> ExecutionResult:
         command = str(arguments.get("command") or target.config.get("test_command") or "").strip()
         if not command:
             raise ValueError("test command is required or must be configured on the target")
-        return self._run(
-            target,
-            command,
-            cwd=self._cwd(target, arguments),
-            timeout=self._timeout(target, arguments),
-        )
+        return self._run(target, command, cwd=self._cwd(target, arguments), timeout=self._timeout(target, arguments))
 
     def _file_read(self, target: Target, arguments: dict[str, Any]) -> ExecutionResult:
         cwd = self._cwd(target, arguments)
         path = self._relative_path(arguments.get("path"))
         max_bytes = max(1, min(int(arguments.get("max_bytes") or 262144), 2_000_000))
-        command = f"head -c {max_bytes + 1} -- {shlex.quote(path)}"
-        execution = self._run(target, command, cwd=cwd)
+        execution = self._run(target, f"head -c {max_bytes + 1} -- {shlex.quote(path)}", cwd=cwd)
         if not execution.ok:
             return execution
         content = str(execution.result.get("stdout") or "")
@@ -274,13 +223,7 @@ class SystemExecutor:
         max_results = max(1, min(int(arguments.get("max_results") or 200), 2000))
         quoted_query = shlex.quote(query)
         quoted_path = shlex.quote(path)
-        command = (
-            "if command -v rg >/dev/null 2>&1; then "
-            f"rg -n --no-heading --color never -F -- {quoted_query} {quoted_path}; "
-            "else "
-            f"grep -RFn -- {quoted_query} {quoted_path}; "
-            f"fi | head -n {max_results}"
-        )
+        command = "if command -v rg >/dev/null 2>&1; then " f"rg -n --no-heading --color never -F -- {quoted_query} {quoted_path}; " "else " f"grep -RFn -- {quoted_query} {quoted_path}; " f"fi | head -n {max_results}"
         execution = self._run(target, command, cwd=cwd)
         if execution.exit_code not in {0, 1}:
             return execution
@@ -298,105 +241,59 @@ class SystemExecutor:
             raise ValueError("patch is required")
         if len(patch.encode("utf-8")) > _MAX_PATCH_BYTES:
             raise ValueError("patch is too large")
-        check = bool(arguments.get("check", False))
-        command = "git apply --check -" if check else "git apply --whitespace=nowarn -"
+        command = "git apply --whitespace=nowarn --recount"
+        if bool(arguments.get("check", False)):
+            command += " --check"
         return self._run(target, command, cwd=cwd, stdin_text=patch)
 
     def _git_diff(self, target: Target, arguments: dict[str, Any]) -> ExecutionResult:
         cwd = self._cwd(target, arguments)
         staged = bool(arguments.get("staged", False))
-        max_bytes = max(1, min(int(arguments.get("max_bytes") or 524288), 2_000_000))
-        command = "git diff --no-ext-diff --binary"
+        max_bytes = max(4096, min(int(arguments.get("max_bytes") or 524288), 2_000_000))
+        command = "git --no-pager diff --no-ext-diff"
         if staged:
             command += " --cached"
         execution = self._run(target, command, cwd=cwd)
-        if not execution.ok:
-            return execution
         diff = str(execution.result.get("stdout") or "")
-        raw = diff.encode("utf-8", "replace")
-        truncated = len(raw) > max_bytes
-        if truncated:
-            diff = raw[:max_bytes].decode("utf-8", "replace")
+        if len(diff.encode("utf-8", "replace")) > max_bytes:
+            diff = diff.encode("utf-8", "replace")[:max_bytes].decode("utf-8", "replace")
         result = dict(execution.result)
-        result.update({"diff": diff, "staged": staged, "truncated": truncated})
+        result.update({"staged": staged, "diff": diff})
         result.pop("stdout", None)
-        return ExecutionResult(ok=True, result=result, exit_code=0)
+        return ExecutionResult(ok=execution.ok, result=result, exit_code=execution.exit_code)
 
     def _git_commit(self, target: Target, arguments: dict[str, Any]) -> ExecutionResult:
         cwd = self._cwd(target, arguments)
         message = str(arguments.get("message") or "").strip()
-        if not message or "\x00" in message or len(message) > 500:
-            raise ValueError("commit message is required and must be at most 500 characters")
-        raw_paths = arguments.get("paths")
-        if not isinstance(raw_paths, list) or not raw_paths:
-            raise ValueError("git commit requires an explicit non-empty paths array")
-        paths = [self._relative_path(item) for item in raw_paths]
-        quoted_paths = " ".join(shlex.quote(item) for item in paths)
-        command = (
-            f"git add -- {quoted_paths} && "
-            f"git commit -m {shlex.quote(message)}"
-        )
-        return self._run(target, command, cwd=cwd)
+        if not message or "\x00" in message or "\n" in message:
+            raise ValueError("commit message must be one non-empty line")
+        paths = arguments.get("paths") or []
+        if not isinstance(paths, list):
+            raise ValueError("paths must be an array")
+        safe_paths = [self._relative_path(item) for item in paths]
+        add = "git add -- " + " ".join(shlex.quote(item) for item in safe_paths) if safe_paths else "git add -u"
+        return self._run(target, f"{add} && git commit -m {shlex.quote(message)}", cwd=cwd)
 
     def _project_context(self, target: Target, arguments: dict[str, Any]) -> ExecutionResult:
         cwd = self._cwd(target, arguments)
-        max_files = max(1, min(int(arguments.get("max_files") or 1000), 5000))
-        max_instruction_bytes = max(
-            1024,
-            min(int(arguments.get("max_instruction_bytes") or 65536), 262144),
-        )
-        file_command = (
-            "if git rev-parse --is-inside-work-tree >/dev/null 2>&1; then "
-            "git ls-files -co --exclude-standard; "
-            "else find . -type f -not -path './.git/*' -print | sed 's#^./##'; "
-            f"fi | head -n {max_files}"
-        )
-        file_result = self._run(target, file_command, cwd=cwd)
-        if not file_result.ok:
-            return file_result
-        files = [line for line in str(file_result.result.get("stdout") or "").splitlines() if line]
-
-        instruction_names = target.config.get("project_instruction_files") or [
-            "AGENTS.md",
-            "AGENTS.override.md",
-            "LIGHTHOUSE.md",
-            ".lighthouse/project.yaml",
-        ]
-        instructions: list[dict[str, Any]] = []
-        remaining = max_instruction_bytes
-        for name in instruction_names:
+        max_files = max(1, min(int(arguments.get("max_files") or 500), 5000))
+        max_instruction_bytes = max(1024, min(int(arguments.get("max_instruction_bytes") or 131072), 1_000_000))
+        instructions = []
+        used = 0
+        for name in target.config.get("project_instruction_files") or []:
+            quoted = shlex.quote(name)
+            probe = self._run(target, f"test -f -- {quoted} && head -c {max_instruction_bytes} -- {quoted} || true", cwd=cwd)
+            content = str(probe.result.get("stdout") or "")
+            if not content:
+                continue
+            remaining = max_instruction_bytes - used
             if remaining <= 0:
                 break
-            safe_name = self._relative_path(name)
-            read = self._file_read(
-                target,
-                {"cwd": cwd, "path": safe_name, "max_bytes": remaining},
-            )
-            if not read.ok:
-                continue
-            content = str(read.result.get("content") or "")
-            if not content.strip():
-                continue
-            size = len(content.encode("utf-8"))
-            instructions.append(
-                {
-                    "path": safe_name,
-                    "content": content,
-                    "truncated": bool(read.result.get("truncated")),
-                }
-            )
-            remaining -= min(size, remaining)
-
-        status = self._run(target, "git status --short --branch", cwd=cwd)
-        return ExecutionResult(
-            ok=True,
-            result={
-                "transport": str(target.config.get("transport") or "local"),
-                "cwd": cwd,
-                "files": files,
-                "file_count": len(files),
-                "instructions": instructions,
-                "git_status": status.result if status.ok else {"error": status.result},
-            },
-            exit_code=0,
-        )
+            encoded = content.encode("utf-8", "replace")[:remaining]
+            content = encoded.decode("utf-8", "replace")
+            used += len(encoded)
+            instructions.append({"path": name, "content": content})
+        index_command = "if command -v fd >/dev/null 2>&1; then " f"fd -t f -H -E .git . | head -n {max_files}; " "elif command -v find >/dev/null 2>&1; then " f"find . -type f -not -path './.git/*' -print | sed 's#^./##' | head -n {max_files}; " "else true; fi"
+        index_execution = self._run(target, index_command, cwd=cwd)
+        files = [line for line in str(index_execution.result.get("stdout") or "").splitlines() if line]
+        return ExecutionResult(ok=True, result={"cwd": cwd, "files": files, "file_count": len(files), "instructions": instructions, "instructions_bytes": used}, exit_code=0)
