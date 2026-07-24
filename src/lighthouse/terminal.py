@@ -16,8 +16,10 @@ from .secrets import (
     CONTROL_KEY_SERVICE,
     MODEL_KEY_SERVICE,
     control_api_key,
+    keychain_available,
     keychain_delete,
     keychain_set,
+    secret_store_name,
 )
 from .ui import SwissTerminal
 
@@ -48,25 +50,43 @@ def _base_url(config: dict[str, Any]) -> str:
 def _client(config: dict[str, Any]) -> legacy.Client:
     key = control_api_key()
     if len(key) < 16:
-        raise legacy.CLIError("LightHouse control credential is missing. Run the macOS installer or `lh login`.")
+        raise legacy.CLIError("LightHouse control credential is missing. Run the platform installer or `lh login`.")
     os.environ["LIGHTHOUSE_API_KEY"] = key
     return legacy.Client(_base_url(config), key)
 
 
-def _restart_launch_agent() -> None:
-    if sys.platform != "darwin":
-        return
-    subprocess.run(
-        ["launchctl", "kickstart", "-k", f"gui/{os.getuid()}/com.cpym.su.lighthouse"],
-        check=False,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-    )
+def _host_platform() -> str:
+    if sys.platform == "darwin":
+        return "macos"
+    if sys.platform == "win32":
+        return "windows"
+    return "linux"
+
+
+def _restart_background_service() -> None:
+    if sys.platform == "darwin":
+        subprocess.run(
+            ["launchctl", "kickstart", "-k", f"gui/{os.getuid()}/com.cpym.su.lighthouse"],
+            check=False,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+    elif sys.platform == "win32":
+        subprocess.run(
+            ["schtasks.exe", "/Run", "/TN", "LightHouse"],
+            check=False,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            creationflags=int(getattr(subprocess, "CREATE_NO_WINDOW", 0)),
+        )
 
 
 def login(*, ui: SwissTerminal | None = None) -> int:
-    if sys.platform != "darwin":
-        raise legacy.CLIError("`lh login` currently stores credentials in macOS Keychain. Use environment variables on other systems.")
+    if not keychain_available():
+        raise legacy.CLIError(
+            "`lh login` requires macOS Keychain or Windows DPAPI. "
+            "Use LIGHTHOUSE_MODEL_API_KEY on other systems."
+        )
     path, config = _config()
     if len(control_api_key()) < 16:
         control = getpass.getpass("LightHouse control key (leave blank to generate): ").strip() or os.urandom(32).hex()
@@ -81,14 +101,18 @@ def login(*, ui: SwissTerminal | None = None) -> int:
     keychain_set(MODEL_KEY_SERVICE, model_key)
     config.update({
         "url": _base_url(config),
-        "model_base_url": base,
+        "model_base_url": base.rstrip("/"),
         "model": model,
         "model_json_mode": True,
         "actor": config.get("actor") or getpass.getuser(),
     })
     legacy.save_config(path, config)
-    _restart_launch_agent()
-    (ui or SwissTerminal()).notice("CREDENTIALS", "Model credentials saved in macOS Keychain.", tone="green")
+    _restart_background_service()
+    (ui or SwissTerminal()).notice(
+        "CREDENTIALS",
+        f"Model credentials saved in {secret_store_name()}.",
+        tone="green",
+    )
     return 0
 
 
@@ -113,24 +137,43 @@ def _named(items: list[dict[str, Any]], name: str) -> dict[str, Any] | None:
     return next((item for item in items if item.get("name") == name), None)
 
 
+def _desktop_config(platform: str, project_path: Path) -> dict[str, Any]:
+    if platform == "windows":
+        apps = ["explorer.exe", "msedge.exe", "chrome.exe", "firefox.exe", "notepad.exe", "code.exe"]
+    else:
+        apps = ["Safari", "Google Chrome", "Firefox", "Arc", "Finder"]
+    return {
+        "platform": platform,
+        "default_cwd": str(project_path),
+        "allowed_roots": [str(project_path)],
+        "allowed_apps": apps,
+        "allowed_schemes": ["http", "https", "file"],
+        "browser": "default",
+    }
+
+
 def ensure_workspace(client: legacy.Client, config: dict[str, Any], project_path: Path) -> str:
     """Create/reuse the local System + Desktop execution coordinate."""
     project_path = project_path.expanduser().resolve()
     if not project_path.is_dir():
         raise legacy.CLIError(f"project path does not exist: {project_path}")
-    identity = hashlib.sha256(str(project_path).encode("utf-8")).hexdigest()[:12]
+    platform = _host_platform()
+    # Preserve the original macOS workspace IDs while namespacing Windows.
+    identity_source = str(project_path) if platform == "macos" else f"{platform}\0{project_path}"
+    identity = hashlib.sha256(identity_source.encode("utf-8")).hexdigest()[:12]
     system_name = f"local-system-{identity}"
     desktop_name = f"local-desktop-{identity}"
-    workspace_name = f"workspace-{identity}-desktop"
+    workspace_name = f"workspace-{identity}" + ("-desktop" if platform in {"macos", "windows"} else "")
 
     targets = client.request("GET", "/v1/targets").get("items", [])
     system_target = _named(targets, system_name)
     if system_target is None:
         target_config: dict[str, Any] = {
             "transport": "local",
+            "platform": platform,
             "default_cwd": str(project_path),
             "allowed_roots": [str(project_path)],
-            "shell": "/bin/bash",
+            "shell": "powershell.exe" if platform == "windows" else "/bin/bash",
         }
         test_command = _project_test_command(project_path)
         if test_command:
@@ -141,20 +184,15 @@ def ensure_workspace(client: legacy.Client, config: dict[str, Any], project_path
             "config": target_config,
         })
 
-    desktop_target = _named(targets, desktop_name)
-    if desktop_target is None:
-        desktop_target = client.request("POST", "/v1/targets", {
-            "name": desktop_name,
-            "kind": "desktop",
-            "config": {
-                "platform": "macos",
-                "default_cwd": str(project_path),
-                "allowed_roots": [str(project_path)],
-                "allowed_apps": ["Safari", "Google Chrome", "Firefox", "Arc", "Finder"],
-                "allowed_schemes": ["http", "https", "file"],
-                "browser": "default",
-            },
-        })
+    desktop_target: dict[str, Any] | None = None
+    if platform in {"macos", "windows"}:
+        desktop_target = _named(targets, desktop_name)
+        if desktop_target is None:
+            desktop_target = client.request("POST", "/v1/targets", {
+                "name": desktop_name,
+                "kind": "desktop",
+                "config": _desktop_config(platform, project_path),
+            })
 
     workspaces = client.request("GET", "/v1/workspaces").get("items", [])
     workspace = _named(workspaces, workspace_name)
@@ -163,7 +201,7 @@ def ensure_workspace(client: legacy.Client, config: dict[str, Any], project_path
             "name": workspace_name,
             "data_target_id": None,
             "system_target_id": system_target["id"],
-            "desktop_target_id": desktop_target["id"],
+            "desktop_target_id": desktop_target["id"] if desktop_target else None,
         })
 
     config.update({
@@ -172,7 +210,9 @@ def ensure_workspace(client: legacy.Client, config: dict[str, Any], project_path
         "mode": "auto",
         "actor": config.get("actor") or getpass.getuser(),
         "project_path": str(project_path),
-        "desktop_target": desktop_target["id"],
+        "platform": platform,
+        "system_target": system_target["id"],
+        "desktop_target": desktop_target["id"] if desktop_target else None,
     })
     _save(config)
     return str(workspace["id"])
@@ -185,7 +225,8 @@ def init_project(path: str | None = None, *, ui: SwissTerminal | None = None) ->
     project = Path(path or os.getcwd())
     with ui.busy("WORKSPACE / BIND SYSTEM + DESKTOP"):
         workspace_id = ensure_workspace(client, config, project)
-    ui.notice("WORKSPACE READY", f"{project.resolve()}\nWorkspace {workspace_id}\nKernels SYSTEM + DESKTOP", tone="green")
+    kernels = "SYSTEM + DESKTOP" if _host_platform() in {"macos", "windows"} else "SYSTEM"
+    ui.notice("WORKSPACE READY", f"{project.resolve()}\nWorkspace {workspace_id}\nKernels {kernels}", tone="green")
     return 0
 
 
@@ -195,6 +236,8 @@ def doctor(*, ui: SwissTerminal | None = None) -> int:
     checks: dict[str, Any] = {
         "control_key": len(control_api_key()) >= 16,
         "model_config": bool(config.get("model_base_url") and config.get("model")),
+        "secret_store": secret_store_name(),
+        "platform": config.get("platform") or _host_platform(),
         "url": _base_url(config),
         "workspace": config.get("workspace"),
         "project_path": config.get("project_path"),
@@ -296,7 +339,7 @@ def _legacy_passthrough(line: str, ui: SwissTerminal) -> None:
         ui.notice("EXACT COMMAND", "Prefix a complete lh command with !", tone="amber")
         return
     try:
-        argv = shlex.split(command)
+        argv = shlex.split(command, posix=sys.platform != "win32")
     except ValueError as exc:
         ui.error(str(exc))
         return
@@ -382,7 +425,7 @@ def help_text() -> None:
   lh                         open the Swiss interactive terminal
   lh "task"                  run one natural-language task across kernels
   lh init [PATH]             bind System + Desktop targets for a project
-  lh login                   store the model key in macOS Keychain
+  lh login                   store the model key in the native secret store
   lh doctor                  verify the local installation
   lh capabilities            list governed capabilities
   lh mode desktop            select only the Desktop Kernel
@@ -415,7 +458,7 @@ def main(argv: list[str] | None = None) -> int:
         if key:
             os.environ["LIGHTHOUSE_API_KEY"] = key
         return legacy.main(argv)
-    except (legacy.CLIError, OSError, ValueError) as exc:
+    except (legacy.CLIError, OSError, RuntimeError, ValueError) as exc:
         ui.error(str(exc))
         return 2
 
