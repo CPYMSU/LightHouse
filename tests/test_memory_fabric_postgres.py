@@ -8,7 +8,7 @@ import pytest
 
 from lighthouse.agent_store import PostgresAgentStore
 from lighthouse.bootstrap import migration_sql
-from lighthouse.memory import PostgresMemoryFabric
+from lighthouse.memory_search import PostgresMemoryFabric
 from lighthouse.models import KernelMode, TargetKind
 from lighthouse.repository import PostgresRepository
 
