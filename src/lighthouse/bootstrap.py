@@ -2,10 +2,14 @@ from __future__ import annotations
 
 from importlib.resources import files
 
+from .agent_adapter import AgentRepositoryAdapter
+from .agent_store import PostgresAgentStore
+from .brain import LightHouseBrain
 from .capabilities import CapabilityRegistry
 from .config import Settings
 from .executors import PostgresExecutor, SystemExecutor
 from .kernel import OperationKernel
+from .provider import DisabledProvider, OpenAICompatibleProvider
 from .repository import PostgresRepository
 
 
@@ -18,3 +22,22 @@ def build_kernel(settings: Settings, *, migrate: bool = True) -> OperationKernel
     if migrate:
         repository.migrate(migration_sql())
     return OperationKernel(repository, CapabilityRegistry(), {"postgres": PostgresExecutor(), "system": SystemExecutor()})
+
+
+def build_brain(settings: Settings, kernel: OperationKernel) -> LightHouseBrain:
+    if settings.model and settings.model_base_url and settings.model_api_key:
+        provider = OpenAICompatibleProvider(
+            base_url=settings.model_base_url,
+            api_key=settings.model_api_key,
+            model=settings.model,
+            timeout=settings.model_timeout,
+            json_mode=settings.model_json_mode,
+            max_state_chars=settings.model_max_state_chars,
+        )
+    else:
+        provider = DisabledProvider()
+    state_repository = AgentRepositoryAdapter(PostgresAgentStore(settings.database_url), kernel.repository)
+    return LightHouseBrain(state_repository, kernel, provider)
+
+
+build_agent_runtime = build_brain

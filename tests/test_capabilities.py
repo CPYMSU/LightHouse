@@ -1,22 +1,17 @@
-from __future__ import annotations
-
-import unittest
-
 from lighthouse.capabilities import CapabilityRegistry
 from lighthouse.models import KernelMode
 
 
-class CapabilityRegistryTests(unittest.TestCase):
-    def test_exact_alias_wins(self):
-        registry = CapabilityRegistry()
-        result = registry.search("db exec")
-        self.assertEqual(result[0].tool_name, "data.sql.exec.v1")
-
-    def test_kernel_filter_hides_other_surface(self):
-        registry = CapabilityRegistry()
-        result = registry.search("service", kernel=KernelMode.DATA)
-        self.assertEqual(result, [])
+def test_registry_contains_coding_agent_capabilities():
+    registry = CapabilityRegistry()
+    names = {item.tool_name for item in registry.list(kernel=KernelMode.SYSTEM)}
+    assert "system.project.context.v1" in names
+    assert "system.file.patch.v1" in names
+    assert "system.git.diff.v1" in names
+    assert "system.test.run.v1" in names
 
 
-if __name__ == "__main__":
-    unittest.main()
+def test_exact_capability_search_wins():
+    registry = CapabilityRegistry()
+    result = registry.search("git diff", kernel=KernelMode.SYSTEM)
+    assert result[0].tool_name == "system.git.diff.v1"

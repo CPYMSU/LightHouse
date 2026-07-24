@@ -1,128 +1,129 @@
 # LightHouse OS
 
-LightHouse OS is a PostgreSQL-first super-terminal kernel for operating two
-worlds through one governed protocol:
+LightHouse is one integrated PostgreSQL-first AI operating terminal.
 
-- **Data surface:** PostgreSQL schema inspection, read queries and transactional
-  `data exec` mutations.
-- **System surface:** local or SSH Linux shell, systemd, journal and Git commands.
+It is not “LightHouse plus a separately installed Agent Runtime.” Planning,
+context, action, observation, verification, memory and recovery are native
+LightHouse capabilities, and every side effect still passes through the governed
+Operation Kernel.
 
-Every action is an immutable **Operation** with append-only events and a durable
-**Receipt**. Exact CLI commands and future AI function calls share the same
-capability registry.
-
-## Current 0.1 slice
-
-This first implementation includes:
-
-- FastAPI HTTP gateway for terminals on any computer;
-- PostgreSQL control-plane schema and migrations;
-- data/system/auto routing modes;
-- versioned capability atlas with exact and lexical search;
-- PostgreSQL data executor using server-held DSN environment variables;
-- local and OpenSSH Linux executor;
-- one-step explicit confirmation for high-risk operations;
-- idempotent, immutable operation receipts;
-- CLI context that stores no API key or database credential;
-- initial smart-index node and edge tables;
-- unit tests and GitHub Actions CI.
-
-The AI provider/planner is intentionally not hard-coded in this slice. It will
-consume the same `/v1/capabilities` and `/v1/operations` contracts without
-changing the execution boundary.
-
-## Start locally
-
-```bash
-docker compose up -d
-python -m venv .venv
-. .venv/bin/activate
-pip install -e '.[dev]'
-
-export LIGHTHOUSE_DATABASE_URL='postgresql://lighthouse:lighthouse@127.0.0.1:5432/lighthouse'
-export LIGHTHOUSE_API_KEY='replace-with-a-long-random-token'
-
-lighthouse-api
+```text
+user intent
+  -> LightHouse Brain
+  -> project/data context
+  -> exact capability
+  -> immutable Operation
+  -> Data or System executor
+  -> durable Receipt
+  -> verification or next action
 ```
 
-In a second terminal:
+## Install on macOS with one command
+
+Open Terminal and run:
 
 ```bash
-export LIGHTHOUSE_URL='http://127.0.0.1:8787'
-export LIGHTHOUSE_API_KEY='replace-with-a-long-random-token'
-
-lh migrate
-lh capabilities
+curl -fsSL https://raw.githubusercontent.com/CPYMSU/LightHouse/main/install-macos.sh | bash
 ```
 
-## Register targets
+The installer installs Homebrew when necessary, Python 3.12, PostgreSQL 16 and
+Git; downloads the complete LightHouse package; creates a private local
+PostgreSQL control plane; asks for the model endpoint, model name and hidden API
+key; stores credentials in macOS Keychain; installs a `launchd` background
+service; installs the single `lh` command; and runs migrations and health checks.
 
-Secrets remain on the API server. The target records contain only environment
-variable names and non-secret routing metadata.
+No API key is written to the repository or `~/.lighthouse/config.json`.
+
+After installation:
 
 ```bash
-export WAREHOUSE_DATABASE_URL='postgresql://warehouse:secret@db.internal/warehouse'
-export WAREHOUSE_SSH_KEY='/secure/path/warehouse_ed25519'
-
-lh target-add warehouse-db --kind data \
-  --config-json '{"dsn_env":"WAREHOUSE_DATABASE_URL","read_only":false}'
-
-lh target-add warehouse-server --kind system \
-  --config-json '{"transport":"ssh","host":"server.example.com","user":"warehouse","identity_file_env":"WAREHOUSE_SSH_KEY","default_cwd":"/opt/warehouse"}'
-
-lh targets
+cd /path/to/your/project
+lh
 ```
 
-Use returned target IDs to create a workspace:
+LightHouse binds the current project and opens its integrated terminal:
+
+```text
+lh> inspect this repository and explain its architecture
+lh> run the tests and identify the root cause
+lh> fix the failure, rerun tests and show me the diff
+```
+
+A single task can also be sent directly:
 
 ```bash
-lh workspace-add warehouse-prod \
-  --data-target DATA_TARGET_UUID \
-  --system-target SYSTEM_TARGET_UUID
-
-lh workspaces
-lh configure --workspace WORKSPACE_UUID --mode auto --actor adsin
+lh "inspect the failing tests, fix the root cause and verify the result"
 ```
 
-## Execute PostgreSQL operations
+## Built-in capabilities
 
-Read operations execute immediately:
+### System surface
+
+- local and OpenSSH Linux targets;
+- project instruction and context loading;
+- bounded file read and search;
+- unified diff application;
+- shell and configured test execution;
+- Git status, diff and explicit-path commit;
+- systemd status/restart and journal reads.
+
+### Data surface
+
+- PostgreSQL schema inspection;
+- server-enforced read-only queries;
+- transactional mutations with frozen confirmation and durable Receipts.
+
+### LightHouse Brain
+
+The native reasoning loop loads project and operation context, selects one exact
+authorized capability, submits an idempotent Operation, pauses for confirmation
+when required, observes the durable Receipt, verifies the result and resumes from
+PostgreSQL after a disconnect. The model never receives raw filesystem, shell or
+database authority.
+
+## Useful commands
 
 ```bash
-lh run data.sql.query.v1 \
-  --args-json '{"sql":"select now() as server_time"}'
+lh                         # integrated interactive terminal
+lh "task"                  # one natural-language task
+lh init [PATH]             # bind a project directory
+lh login                   # replace the model key in macOS Keychain
+lh doctor                  # verify installation
+lh capabilities            # inspect the capability atlas
+lh run ...                 # exact governed operation
+lh operation UUID
+lh receipt UUID
 ```
 
-Mutations are persisted first and require one confirmation. `--confirm` confirms
-that exact frozen operation immediately:
+The older `lh agent ...` form remains as a compatibility alias for scripts, but
+there is no separately installed Agent service.
+
+## Project instructions
+
+LightHouse reads bounded project guidance from:
+
+- `AGENTS.md`
+- `AGENTS.override.md`
+- `LIGHTHOUSE.md`
+- `.lighthouse/project.yaml`
+
+## Security model
+
+- The HTTP service binds to `127.0.0.1` by default.
+- API keys are stored in macOS Keychain.
+- Database and SSH secrets are referenced by server environment names.
+- High-risk writes freeze an exact Operation before confirmation.
+- `--yes` cannot bypass Passkey policies.
+- Receipts, not client timeouts, are the source of execution truth.
+- Local project targets are confined to explicit allowed roots.
+- SSH host-key checking remains strict by default.
+
+## Remove LightHouse
 
 ```bash
-lh run data.sql.exec.v1 --confirm \
-  --idempotency-key create-example-1 \
-  --args-json '{"sql":"insert into examples(name) values (%s) returning id","params":["LightHouse"]}'
+curl -fsSL https://raw.githubusercontent.com/CPYMSU/LightHouse/main/uninstall-macos.sh | bash
 ```
 
-## Execute Linux server commands
+The uninstaller preserves PostgreSQL data rather than deleting it automatically.
 
-```bash
-lh run system.journal.read.v1 \
-  --args-json '{"service":"warehouse-api","lines":200}'
-
-lh run system.service.restart.v1 --confirm \
-  --args-json '{"service":"warehouse-api"}'
-
-lh run system.shell.exec.v1 --confirm \
-  --args-json '{"command":"python3 -m pytest -q","cwd":"/opt/warehouse"}'
-```
-
-## Recover after a disconnect
-
-```bash
-lh events OPERATION_UUID
-lh receipt OPERATION_UUID
-```
-
-A client timeout never proves failure. The receipt is the source of truth, and
-an idempotency key prevents a caller from repeating a completed side effect.
-
-See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the boundary design.
+See `docs/ARCHITECTURE.md` and `docs/AGENT_RUNTIME.md` for internal contracts.
