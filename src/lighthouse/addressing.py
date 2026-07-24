@@ -5,15 +5,15 @@ from typing import Any
 
 from .models import KernelMode
 
+_REFERENTIAL_MARKERS = (
+    "繼續", "继续", "再", "剛才", "刚才", "之前", "這個", "这个", "那個", "那个",
+    "它", "豐富", "丰富", "優化", "优化", "continue", "again", "more", "richer",
+    "this", "that", "previous", "before",
+)
+
 
 class ExecutionAddressResolver:
-    """Resolve model-proposed paths against durable, observed locators.
-
-    The model may choose an action, but it may not invent an execution coordinate.
-    New paths are expressed relative to the bound Workspace root through typed
-    capabilities. Existing absolute cwd values must already be known or be the
-    exact bound root.
-    """
+    """Resolve model-proposed paths against durable, observed locators."""
 
     def __init__(self, memory, repository, target_resolver=None):
         self.memory = memory
@@ -35,25 +35,10 @@ class ExecutionAddressResolver:
         default_cwd = Path(str(target.config.get("default_cwd") or "/")).expanduser().resolve()
         roots = [Path(str(item)).expanduser().resolve() for item in (target.config.get("allowed_roots") or [default_cwd])]
         conversation = self.memory.conversation_for_run(run.id)
-        memory = self.memory.context(
-            workspace_id=run.workspace_id,
-            actor=run.actor,
-            conversation_id=conversation["id"] if conversation else None,
-            query=run.task,
-            message_limit=8,
-            file_limit=30,
-        )
+        memory = self.memory.context(workspace_id=run.workspace_id, actor=run.actor, conversation_id=conversation["id"] if conversation else None, query=run.task, message_limit=8, file_limit=30)
         active_subject = self._active_subject(memory)
-        known_files = {
-            Path(str(item["canonical_path"])).expanduser().resolve()
-            for item in memory.get("relevant_files") or []
-            if item.get("canonical_path")
-        }
-        known_locators = [
-            (str(item.get("kind") or ""), Path(str(item.get("canonical_value"))).expanduser())
-            for item in memory.get("recent_locators") or []
-            if item.get("canonical_value") and str(item.get("kind") or "") in {"file", "directory"}
-        ]
+        known_files = {Path(str(item["canonical_path"])).expanduser().resolve() for item in memory.get("relevant_files") or [] if item.get("canonical_path")}
+        known_locators = [(str(item.get("kind") or ""), Path(str(item.get("canonical_value"))).expanduser()) for item in memory.get("recent_locators") or [] if item.get("canonical_value") and str(item.get("kind") or "") in {"file", "directory"}]
         known_directories = {default_cwd}
         for kind, raw in known_locators:
             path = raw.resolve()
@@ -64,39 +49,21 @@ class ExecutionAddressResolver:
             known_directories.add(active_subject if active_subject.is_dir() else active_subject.parent)
             if active_subject.is_file():
                 known_files.add(active_subject)
-
         if capability.kernel == KernelMode.SYSTEM:
-            value = self._ground_system(
-                capability.operation,
-                value,
-                default_cwd=default_cwd,
-                roots=roots,
-                active_subject=active_subject,
-                known_files=known_files,
-                known_directories=known_directories,
-            )
-        elif capability.operation == "open_file":
-            value = self._ground_desktop_file(
-                value,
-                default_cwd=default_cwd,
-                roots=roots,
-                active_subject=active_subject,
-                known_files=known_files,
-            )
+            return self._ground_system(capability.operation, value, default_cwd=default_cwd, roots=roots, active_subject=active_subject, known_files=known_files, known_directories=known_directories)
+        if capability.operation == "open_file":
+            return self._ground_desktop_file(value, default_cwd=default_cwd, roots=roots, active_subject=active_subject, known_files=known_files)
         return value
 
-    def _ground_system(
-        self,
-        operation: str,
-        arguments: dict[str, Any],
-        *,
-        default_cwd: Path,
-        roots: list[Path],
-        active_subject: Path | None,
-        known_files: set[Path],
-        known_directories: set[Path],
-    ) -> dict[str, Any]:
+    def _ground_system(self, operation: str, arguments: dict[str, Any], *, default_cwd: Path, roots: list[Path], active_subject: Path | None, known_files: set[Path], known_directories: set[Path]) -> dict[str, Any]:
         value = dict(arguments)
+        if operation == "directory_create":
+            path = str(value.get("path") or "").strip()
+            if not path or Path(path).is_absolute():
+                raise ValueError("new directories require a relative path inside the bound Workspace")
+            value["path"] = self._safe_relative(path)
+            value.pop("cwd", None)
+            return value
         proposed_cwd = str(value.get("cwd") or "").strip()
         if proposed_cwd:
             cwd = Path(proposed_cwd).expanduser().resolve()
@@ -109,15 +76,8 @@ class ExecutionAddressResolver:
         else:
             cwd = self._preferred_directory(active_subject, known_directories, default_cwd, roots)
         value["cwd"] = str(cwd)
-
         if operation in {"file_read", "file_write"}:
-            value["path"] = self._ground_existing_or_active_file(
-                value.get("path"),
-                cwd=cwd,
-                active_subject=active_subject,
-                known_files=known_files,
-                must_exist=operation == "file_read",
-            )
+            value["path"] = self._ground_existing_or_active_file(value.get("path"), cwd=cwd, active_subject=active_subject, known_files=known_files, must_exist=operation == "file_read")
         elif operation == "file_search":
             path = str(value.get("path") or "").strip()
             if path:
@@ -129,29 +89,13 @@ class ExecutionAddressResolver:
                 value["path"] = self._relative(cwd, candidate)
             else:
                 value["path"] = ""
-        elif operation == "directory_create":
-            path = str(value.get("path") or "").strip()
-            if not path or Path(path).is_absolute():
-                raise ValueError("new directories require a relative path inside the bound Workspace")
-            self._safe_relative(path)
-            value.pop("cwd", None)
         return value
 
-    def _ground_desktop_file(
-        self,
-        arguments: dict[str, Any],
-        *,
-        default_cwd: Path,
-        roots: list[Path],
-        active_subject: Path | None,
-        known_files: set[Path],
-    ) -> dict[str, Any]:
+    def _ground_desktop_file(self, arguments: dict[str, Any], *, default_cwd: Path, roots: list[Path], active_subject: Path | None, known_files: set[Path]) -> dict[str, Any]:
         value = dict(arguments)
         raw = str(value.get("path") or "").strip()
         candidate = None
-        if active_subject and active_subject.is_file() and (
-            not raw or Path(raw).name == active_subject.name or not self._relative_candidate(default_cwd, raw).exists()
-        ):
+        if active_subject and active_subject.is_file() and (not raw or Path(raw).name == active_subject.name or not self._relative_candidate(default_cwd, raw).exists()):
             candidate = active_subject
         elif raw:
             candidate = Path(raw).expanduser()
@@ -167,21 +111,11 @@ class ExecutionAddressResolver:
         value["path"] = str(candidate)
         return value
 
-    def _ground_existing_or_active_file(
-        self,
-        raw_value: Any,
-        *,
-        cwd: Path,
-        active_subject: Path | None,
-        known_files: set[Path],
-        must_exist: bool,
-    ) -> str:
+    def _ground_existing_or_active_file(self, raw_value: Any, *, cwd: Path, active_subject: Path | None, known_files: set[Path], must_exist: bool) -> str:
         raw = str(raw_value or "").strip()
         active_file = active_subject if active_subject and active_subject.is_file() else None
         candidate = self._relative_candidate(cwd, raw) if raw else None
-        if active_file and (
-            not raw or Path(raw).name == active_file.name or (candidate is not None and not candidate.exists())
-        ):
+        if active_file and (not raw or Path(raw).name == active_file.name or (candidate is not None and not candidate.exists())):
             candidate = active_file
         if candidate is None:
             raise ValueError("file path is unresolved; use the active file from memory or an indexed path")
@@ -195,12 +129,15 @@ class ExecutionAddressResolver:
     def _active_subject(memory: dict[str, Any]) -> Path | None:
         task = memory.get("active_task") if isinstance(memory.get("active_task"), dict) else {}
         conversation = memory.get("conversation") if isinstance(memory.get("conversation"), dict) else {}
-        raw = task.get("subject") or conversation.get("active_subject_value")
+        raw = task.get("subject")
+        if not raw:
+            goal = str(task.get("goal") or "").lower()
+            if any(marker in goal for marker in _REFERENTIAL_MARKERS):
+                raw = conversation.get("active_subject_value")
         if not raw:
             return None
-        path = Path(str(raw)).expanduser()
         try:
-            return path.resolve()
+            return Path(str(raw)).expanduser().resolve()
         except OSError:
             return None
 
