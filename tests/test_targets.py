@@ -30,6 +30,30 @@ def test_ssh_secret_references_are_environment_names():
     assert config["identity_file_env"] == "WAREHOUSE_SSH_KEY"
 
 
+def test_desktop_target_defaults_are_bounded():
+    config = validate_target_config(
+        TargetKind.DESKTOP,
+        {"platform": "macos", "default_cwd": "/Users/test/project"},
+    )
+    assert config["allowed_roots"] == ["/Users/test/project"]
+    assert config["allowed_schemes"] == ["http", "https", "file"]
+    assert config["browser"] == "default"
+    assert "Safari" in config["allowed_apps"]
+
+
+def test_desktop_browser_must_be_allowlisted():
+    with pytest.raises(ValueError):
+        validate_target_config(
+            TargetKind.DESKTOP,
+            {
+                "platform": "macos",
+                "default_cwd": "/Users/test/project",
+                "allowed_apps": ["Safari"],
+                "browser": "Unknown Browser",
+            },
+        )
+
+
 def test_path_escape_is_rejected():
     with pytest.raises(ValueError):
         validate_target_config(
