@@ -2,9 +2,11 @@ from __future__ import annotations
 
 from pathlib import Path
 import subprocess
+import sys
 
 import pytest
 
+from lighthouse import secrets
 from lighthouse.capabilities import CapabilityRegistry
 from lighthouse.executors.desktop import DesktopExecutor
 from lighthouse.executors import SystemExecutor
@@ -119,6 +121,19 @@ def test_windows_system_wraps_local_commands_in_powershell(monkeypatch):
     assert calls[0][0] == "powershell.exe"
     assert "Set-Location -LiteralPath 'C:\\work'" in calls[0][-1]
     assert "git status --short --branch" in calls[0][-1]
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows DPAPI integration")
+def test_windows_dpapi_round_trip(tmp_path, monkeypatch):
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path))
+    service = "com.cpym.su.lighthouse.test"
+    value = "windows-current-user-secret"
+
+    secrets.keychain_set(service, value)
+
+    assert secrets.keychain_get(service) == value
+    assert secrets.keychain_delete(service) is True
+    assert secrets.keychain_get(service) is None
 
 
 def test_windows_installer_declares_native_dependencies_and_background_task():
