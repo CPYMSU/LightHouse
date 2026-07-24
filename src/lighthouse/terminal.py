@@ -5,9 +5,11 @@ import getpass
 import hashlib
 import os
 from pathlib import Path
+import shlex
 import subprocess
 import sys
 from typing import Any
+from urllib.parse import urlencode
 
 from . import cli as legacy
 from .secrets import (
@@ -17,6 +19,7 @@ from .secrets import (
     keychain_delete,
     keychain_set,
 )
+from .ui import SwissTerminal
 
 
 LEGACY_COMMANDS = {
@@ -61,7 +64,7 @@ def _restart_launch_agent() -> None:
     )
 
 
-def login() -> int:
+def login(*, ui: SwissTerminal | None = None) -> int:
     if sys.platform != "darwin":
         raise legacy.CLIError("`lh login` currently stores credentials in macOS Keychain. Use environment variables on other systems.")
     path, config = _config()
@@ -85,13 +88,14 @@ def login() -> int:
     })
     legacy.save_config(path, config)
     _restart_launch_agent()
-    print("LightHouse credentials saved in macOS Keychain.")
+    (ui or SwissTerminal()).notice("CREDENTIALS", "Model credentials saved in macOS Keychain.", tone="green")
     return 0
 
 
-def logout() -> int:
+def logout(*, ui: SwissTerminal | None = None) -> int:
     removed = keychain_delete(MODEL_KEY_SERVICE)
-    print("Model credential removed." if removed else "No model credential was stored.")
+    message = "Model credential removed." if removed else "No model credential was stored."
+    (ui or SwissTerminal()).notice("CREDENTIALS", message, tone="cyan")
     return 0
 
 
@@ -135,6 +139,7 @@ def ensure_workspace(client: legacy.Client, config: dict[str, Any], project_path
         })
     config.update({
         "workspace": workspace["id"],
+        "workspace_name": workspace_name,
         "mode": "system",
         "actor": config.get("actor") or getpass.getuser(),
         "project_path": str(project_path),
@@ -143,17 +148,23 @@ def ensure_workspace(client: legacy.Client, config: dict[str, Any], project_path
     return str(workspace["id"])
 
 
-def init_project(path: str | None = None) -> int:
+def init_project(path: str | None = None, *, ui: SwissTerminal | None = None) -> int:
+    ui = ui or SwissTerminal()
     _path, config = _config()
     client = _client(config)
     project = Path(path or os.getcwd())
-    workspace_id = ensure_workspace(client, config, project)
-    print(f"LightHouse initialized for {project.resolve()}")
-    print(f"Workspace: {workspace_id}")
+    with ui.busy("WORKSPACE / BIND PROJECT"):
+        workspace_id = ensure_workspace(client, config, project)
+    ui.notice(
+        "WORKSPACE READY",
+        f"{project.resolve()}\nWorkspace {workspace_id}",
+        tone="green",
+    )
     return 0
 
 
-def doctor() -> int:
+def doctor(*, ui: SwissTerminal | None = None) -> int:
+    ui = ui or SwissTerminal()
     _path, config = _config()
     checks: dict[str, Any] = {
         "control_key": len(control_api_key()) >= 16,
@@ -166,103 +177,189 @@ def doctor() -> int:
         checks["api"] = _client(config).request("GET", "/healthz")
     except Exception as exc:
         checks["api"] = {"ok": False, "error": str(exc)}
-    legacy.print_json(checks)
+    ui.doctor(checks)
     return 0 if checks["control_key"] else 2
 
 
-def _print_run(snapshot: dict[str, Any]) -> None:
-    run = snapshot.get("run") or {}
-    print(f"\n[{run.get('status') or 'unknown'}] run {run.get('id', '')}")
-    if run.get("final_message"):
-        print(run["final_message"])
-
-
-def _drive_run(client: legacy.Client, snapshot: dict[str, Any], *, actor: str) -> dict[str, Any]:
+def _drive_run(
+    client: legacy.Client,
+    snapshot: dict[str, Any],
+    *,
+    actor: str,
+    ui: SwissTerminal,
+) -> dict[str, Any]:
+    seen: set[tuple[Any, ...]] = set()
     while True:
+        seen = ui.render_run(snapshot, seen=seen)
         run = snapshot.get("run") or {}
         status = str(run.get("status") or "")
         if status == "awaiting_confirmation":
             pending = snapshot.get("pending_operation") or {}
-            operation = pending.get("operation") or {}
-            print("\nLightHouse requests confirmation:")
-            print(f"  capability: {operation.get('capability')}")
-            print(f"  operation:  {operation.get('id')}")
-            answer = input("Confirm this frozen operation? [y/N] ").strip().lower()
-            if answer not in {"y", "yes"}:
+            ui.confirmation(pending)
+            if not ui.confirm():
+                ui.notice("PAUSED", "The frozen operation remains pending. Resume it later with its run ID.", tone="amber")
                 return snapshot
-            client.request("POST", f"/v1/operations/{operation['id']}/confirm", {"actor": actor})
-            snapshot = client.request("POST", f"/v1/agent/runs/{run['id']}/advance", {})
+            operation = pending.get("operation") or {}
+            with ui.busy("EXECUTE / CONFIRMED OPERATION"):
+                client.request("POST", f"/v1/operations/{operation['id']}/confirm", {"actor": actor})
+                snapshot = client.request("POST", f"/v1/agent/runs/{run['id']}/advance", {})
             continue
         if status == "waiting_input":
-            message = input("LightHouse needs more information: ").strip()
+            message = ui.input_required(str(run.get("final_message") or ""))
             if not message:
+                ui.notice("PAUSED", "The run is waiting for additional input.", tone="amber")
                 return snapshot
-            snapshot = client.request("POST", f"/v1/agent/runs/{run['id']}/input", {"actor": actor, "message": message})
+            with ui.busy("BRAIN / CONTINUE WITH INPUT"):
+                snapshot = client.request("POST", f"/v1/agent/runs/{run['id']}/input", {"actor": actor, "message": message})
             continue
-        _print_run(snapshot)
+        ui.final(snapshot)
         return snapshot
 
 
-def run_task(task: str, *, auto_confirm: bool = False) -> int:
+def run_task(
+    task: str,
+    *,
+    auto_confirm: bool = False,
+    client: legacy.Client | None = None,
+    config: dict[str, Any] | None = None,
+    ui: SwissTerminal | None = None,
+) -> int:
     task = str(task or "").strip()
     if not task:
         raise legacy.CLIError("task cannot be empty")
-    _path, config = _config()
-    client = _client(config)
-    workspace = config.get("workspace")
-    if not workspace:
-        workspace = ensure_workspace(client, config, Path(config.get("project_path") or os.getcwd()))
+    ui = ui or SwissTerminal()
+    if config is None:
+        _path, config = _config()
+    client = client or _client(config)
+    project = Path.cwd().resolve()
+    if config.get("project_path") != str(project) or not config.get("workspace"):
+        with ui.busy("WORKSPACE / RESOLVE"):
+            ensure_workspace(client, config, project)
     actor = str(config.get("actor") or getpass.getuser())
-    snapshot = client.request("POST", "/v1/agent/runs", {
-        "task": task,
-        "workspace_id": workspace,
-        "actor": actor,
-        "mode": config.get("mode") or "system",
-        "max_steps": 16,
-        "auto_confirm": bool(auto_confirm),
-    })
-    _drive_run(client, snapshot, actor=actor)
+    ui.task_banner(task)
+    with ui.busy("THINK / BUILD PLAN"):
+        snapshot = client.request("POST", "/v1/agent/runs", {
+            "task": task,
+            "workspace_id": config["workspace"],
+            "actor": actor,
+            "mode": config.get("mode") or "system",
+            "max_steps": 16,
+            "auto_confirm": bool(auto_confirm),
+        })
+    _drive_run(client, snapshot, actor=actor, ui=ui)
     return 0
 
 
+def _redraw(ui: SwissTerminal, config: dict[str, Any], *, brain: str = "READY") -> None:
+    ui.clear()
+    ui.masthead(
+        mode=str(config.get("mode") or "system"),
+        workspace=str(config.get("workspace_name") or config.get("workspace") or "local"),
+        project=str(config.get("project_path") or os.getcwd()),
+        brain=brain,
+    )
+    ui.guide()
+    ui.terminal_size_warning()
+
+
+def _capability_view(client: legacy.Client, config: dict[str, Any], ui: SwissTerminal, query: str = "") -> None:
+    params = urlencode({"q": query, "kernel": config.get("mode") or "auto", "limit": 100})
+    with ui.busy("ATLAS / LOAD AUTHORIZED CAPABILITIES"):
+        value = client.request("GET", "/v1/capabilities?" + params)
+    ui.capabilities(value.get("items") or [])
+
+
+def _legacy_passthrough(line: str, ui: SwissTerminal) -> None:
+    command = line[1:].strip()
+    if not command:
+        ui.notice("EXACT COMMAND", "Prefix a complete lh command with !", tone="amber")
+        return
+    try:
+        argv = shlex.split(command)
+    except ValueError as exc:
+        ui.error(str(exc))
+        return
+    ui.section("EXACT COMMAND", command)
+    legacy.main(argv)
+
+
 def interactive() -> int:
+    ui = SwissTerminal()
     _path, config = _config()
     client = _client(config)
-    if not config.get("workspace"):
-        ensure_workspace(client, config, Path.cwd())
-    print("LightHouse OS")
-    print(f"Project: {config.get('project_path')}")
-    print("Type a task. Commands: /init PATH, /doctor, /login, /exit")
+    current_project = Path.cwd().resolve()
+    if config.get("project_path") != str(current_project) or not config.get("workspace"):
+        with ui.busy("WORKSPACE / BIND CURRENT PROJECT"):
+            ensure_workspace(client, config, current_project)
+    _redraw(ui, config)
+    history_path = Path.home() / ".lighthouse" / "history"
+    session = ui.session(history_path)
     while True:
         try:
-            line = input("\nlh> ").strip()
+            line = ui.prompt(
+                mode=str(config.get("mode") or "system"),
+                project=str(config.get("project_path") or current_project),
+                session=session,
+            )
         except (EOFError, KeyboardInterrupt):
-            print()
+            ui.console.print()
             return 0
         if not line:
             continue
         if line in {"/exit", "/quit"}:
             return 0
+        if line == "/clear":
+            _redraw(ui, config)
+            continue
+        if line == "/help":
+            ui.help()
+            continue
+        if line == "/status":
+            _redraw(ui, config)
+            doctor(ui=ui)
+            continue
+        if line.startswith("/capabilities"):
+            _capability_view(client, config, ui, line[len("/capabilities"):].strip())
+            continue
+        if line.startswith("/mode"):
+            requested = line[len("/mode"):].strip().lower()
+            if requested not in {"auto", "system", "data"}:
+                ui.notice("MODE", "Use /mode auto, /mode system or /mode data.", tone="amber")
+                continue
+            config["mode"] = requested
+            _save(config)
+            ui.notice("KERNEL PROFILE", f"Active mode changed to {requested.upper()}.", tone="cyan")
+            continue
         if line.startswith("/init"):
-            init_project(line[5:].strip() or os.getcwd())
+            init_project(line[len("/init"):].strip() or os.getcwd(), ui=ui)
             _path, config = _config()
             client = _client(config)
+            _redraw(ui, config)
             continue
         if line == "/doctor":
-            doctor()
+            doctor(ui=ui)
             continue
         if line == "/login":
-            login()
+            login(ui=ui)
             _path, config = _config()
             client = _client(config)
             continue
-        run_task(line)
+        if line.startswith("/receipt "):
+            operation_id = line.split(maxsplit=1)[1]
+            with ui.busy("RECEIPT / LOAD"):
+                receipt = client.request("GET", f"/v1/operations/{operation_id}/receipt")
+            ui.receipt(receipt)
+            continue
+        if line.startswith("!"):
+            _legacy_passthrough(line, ui)
+            continue
+        run_task(line, client=client, config=config, ui=ui)
 
 
 def help_text() -> None:
-    print("""LightHouse OS
+    print("""LightHouse OS — integrated LightHouse terminal
 
-  lh                         open the integrated LightHouse terminal
+  lh                         open the Swiss interactive terminal
   lh \"task\"                  run one natural-language task
   lh init [PATH]             bind the current project to LightHouse
   lh login                   store the model key in macOS Keychain
@@ -275,6 +372,7 @@ def help_text() -> None:
 
 def main(argv: list[str] | None = None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
+    ui = SwissTerminal()
     try:
         if not argv:
             return interactive()
@@ -283,21 +381,21 @@ def main(argv: list[str] | None = None) -> int:
             help_text()
             return 0
         if first == "login":
-            return login()
+            return login(ui=ui)
         if first == "logout":
-            return logout()
+            return logout(ui=ui)
         if first == "init":
-            return init_project(argv[1] if len(argv) > 1 else None)
+            return init_project(argv[1] if len(argv) > 1 else None, ui=ui)
         if first == "doctor":
-            return doctor()
+            return doctor(ui=ui)
         if first not in LEGACY_COMMANDS and not first.startswith("-"):
-            return run_task(" ".join(argv))
+            return run_task(" ".join(argv), ui=ui)
         key = control_api_key()
         if key:
             os.environ["LIGHTHOUSE_API_KEY"] = key
         return legacy.main(argv)
     except (legacy.CLIError, OSError, ValueError) as exc:
-        print(f"lh: {exc}", file=sys.stderr)
+        ui.error(str(exc))
         return 2
 
 
