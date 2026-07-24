@@ -1,125 +1,46 @@
-# LightHouse Agent Runtime 0.2
+# LightHouse Brain
 
-## Goal
-
-Provide a coding-agent experience similar to modern terminal agents while
-retaining LightHouse's stronger invariant:
-
-> The model never executes a database, file, Git or Linux side effect directly.
-> It can only request a registered capability; the Operation Kernel creates the
-> immutable envelope, applies confirmation policy and records a Receipt.
-
-## Runtime loop
+LightHouse's planning and action loop is a native part of the product, not a
+separately installed agent runtime.
 
 ```text
-create durable agent run
-  -> collect project context through system.project.context.v1
-  -> ask the provider for exactly one structured decision
-  -> validate exact capability and current kernel mode
-  -> create an idempotent Operation
-  -> execute direct reads or pause for confirmation
-  -> append the complete Receipt as an observation
-  -> repeat until verified final / user question / maximum steps
+intent
+  -> context
+  -> plan
+  -> exact capability
+  -> immutable Operation
+  -> confirmation policy
+  -> deterministic executor
+  -> durable Receipt
+  -> observation and verification
 ```
 
-Agent state is stored in `lh_agent_runs`. Every transition, model decision,
-tool dispatch, confirmation pause and observation is stored in
-`lh_agent_steps`. A process restart therefore does not erase the reasoning
-surface needed to resume the task.
+The implementation retains some `agent_*` database and API names for 0.2
+compatibility, but the product boundary is one `lh` command and one LightHouse
+service.
 
-## Model decision protocol
+## Durable state
 
-The model returns exactly one JSON object:
+Runs and steps are persisted in PostgreSQL. A disconnect does not restart the
+reasoning process. The next invocation restores the run, the pending Operation
+and its Receipt.
 
-```json
-{"kind":"tool","capability":"system.git.status.v1","arguments":{},"reason":"inspect"}
-```
+## Project context
 
-```json
-{"kind":"final","message":"Tests pass and the diff is verified.","reason":"done"}
-```
+The System surface loads bounded context from `AGENTS.md`,
+`AGENTS.override.md`, `LIGHTHOUSE.md` and `.lighthouse/project.yaml`, plus Git
+status and the repository file index.
 
-```json
-{"kind":"ask","message":"Which service should be restarted?","reason":"ambiguous"}
-```
+## Execution boundary
 
-Unknown capabilities, cross-kernel calls and malformed arguments fail closed
-before execution.
+The model never receives direct shell, filesystem or database authority. It may
+only select an exact capability from the current atlas. LightHouse freezes an
+Operation envelope, applies confirmation rules, executes through the selected
+Data/System executor and returns the durable Receipt to the reasoning loop.
 
-## Project memory
+## Integrated terminal
 
-`system.project.context.v1` returns:
-
-- tracked and untracked project-file names;
-- Git status;
-- bounded contents of configured instruction files;
-- the effective target working directory.
-
-Default instruction candidates are:
-
-- `AGENTS.md`
-- `AGENTS.override.md`
-- `LIGHTHOUSE.md`
-- `.lighthouse/project.yaml`
-
-This follows the mature project-instruction concept used by coding agents, but
-the current slice scans the configured project root only. Hierarchical
-root-to-working-directory instruction composition is planned separately.
-
-## Coding capability pack
-
-Read capabilities execute directly:
-
-- `system.project.context.v1`
-- `system.file.read.v1`
-- `system.file.search.v1`
-- `system.git.status.v1`
-- `system.git.diff.v1`
-
-Write or command capabilities freeze an Operation and require confirmation:
-
-- `system.file.patch.v1`
-- `system.shell.exec.v1`
-- `system.test.run.v1`
-- `system.git.commit.v1`
-- `system.service.restart.v1`
-
-`system.git.commit.v1` requires an explicit paths array. It cannot silently
-stage the entire working tree.
-
-## Local and SSH execution
-
-The same `SystemExecutor` supports:
-
-- `transport=local`
-- `transport=ssh`
-
-SSH is non-interactive (`BatchMode=yes`), uses strict host-key checking by
-default and reads identity/known-hosts paths from server environment-variable
-references. Target secrets do not enter the control-plane database.
-
-Working directories and file operations are confined to target
-`allowed_roots`. Output, time and result size are bounded and stored in the
-Operation Receipt.
-
-## Confirmation behavior
-
-- `direct`: executes immediately.
-- `explicit`: pauses unless the user confirms or starts the agent with `--yes`.
-- `passkey`: always pauses; `--yes` cannot bypass it.
-
-After confirmation, the exact frozen Operation executes. The agent then reads
-the Receipt and continues; it does not create a second confirmation for the same
-operation.
-
-## Source strategy
-
-The implementation reuses LightHouse's existing Operation Kernel and concepts
-proven in `CPYMSU/warehouse`: shared capability registry, deterministic
-execution, append-only events and receipt recovery. MSU's standardized
-signal/event-bus concept informed the uniform agent-step stream.
-
-OpenAI Codex's public `AGENTS.md` discovery model and coding-loop architecture
-were reviewed as design references. No Codex or Claude Code source was copied
-into LightHouse; the runtime is a native Python implementation around the
-LightHouse capability and receipt contracts.
+`lh` opens the native terminal. Entering a project directory and running `lh`
+automatically creates or reuses a confined local workspace. `lh "task"` runs a
+single task. The legacy `lh agent` command remains only as a script compatibility
+alias.
