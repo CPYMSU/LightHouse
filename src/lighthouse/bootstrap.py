@@ -7,7 +7,7 @@ from .agent_store import PostgresAgentStore
 from .brain import LightHouseBrain
 from .capabilities import CapabilityRegistry
 from .config import Settings
-from .executors import DesktopExecutor, PostgresExecutor, SystemExecutor
+from .executors import DesktopExecutor, PostgresExecutor, ProjectFileExecutor, SystemExecutor
 from .kernel import OperationKernel
 from .provider import DisabledProvider, OpenAICompatibleProvider
 from .repository import PostgresRepository
@@ -27,6 +27,7 @@ def build_kernel(settings: Settings, *, migrate: bool = True) -> OperationKernel
         {
             "postgres": PostgresExecutor(),
             "system": SystemExecutor(),
+            "project_file": ProjectFileExecutor(),
             "desktop": DesktopExecutor(),
         },
     )
