@@ -1,1 +1,3 @@
-__version__ = "0.2.0"
+"""LightHouse OS — PostgreSQL-first governed AI operating terminal."""
+
+__version__ = "0.3.0"
