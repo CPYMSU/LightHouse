@@ -51,9 +51,9 @@ class MemoryRuntimeBridge:
                     elif kind == "run_failed":
                         self.memory.complete_task(run_id, status="failed", summary=message)
             except Exception:
-                # Memory is an auxiliary durability plane. A projection failure must
-                # never change the authoritative Operation or agent-run outcome.
-                continue
+                # A transient projection error must remain retryable. It must not
+                # alter the authoritative Operation or agent-run outcome.
+                self._release(run_id, sequence, kind)
 
     def _claim(self, run_id: str, sequence: int, kind: str) -> bool:
         with self.memory._connect() as connection:  # intentional internal bridge
@@ -63,3 +63,10 @@ class MemoryRuntimeBridge:
                 (run_id, sequence, kind),
             ).fetchone()
         return bool(row)
+
+    def _release(self, run_id: str, sequence: int, kind: str) -> None:
+        with self.memory._connect() as connection:
+            connection.execute(
+                "DELETE FROM lh_memory_projections WHERE run_id=%s AND sequence=%s AND kind=%s",
+                (run_id, sequence, kind),
+            )
