@@ -8,61 +8,40 @@ governed execution surfaces:
 - **Desktop Kernel** — semantic macOS and Windows application, browser and file launching.
 
 Planning, context, action, observation, verification, memory and recovery are
-native LightHouse capabilities. Every side effect still passes through the
-Operation Kernel and produces a durable Receipt.
+native capabilities. Every side effect passes through the Operation Kernel and
+produces a durable Receipt.
 
 ```text
 user intent
-  -> LightHouse Brain
+  -> Memory Fabric + LightHouse Brain
   -> capability atlas
+  -> server-grounded cwd/path
   -> immutable Operation
   -> Data / System / Desktop executor
   -> durable Receipt
-  -> verification or next action
+  -> memory projection and verification
 ```
 
-## Install on macOS with one command
+## Install on macOS
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/CPYMSU/LightHouse/main/install-macos.sh | bash
 ```
 
-The macOS installer prepares Python 3.12, PostgreSQL 16 and Git, downloads the
-complete LightHouse package, stores credentials in macOS Keychain, installs a
-`launchd` background service and the single `lh` command, then runs migrations
-and health checks.
+The installer prepares Python 3.12, PostgreSQL 16 and Git, stores credentials in
+macOS Keychain, installs a `launchd` service and the `lh` command, then migrates
+and checks the local control plane.
 
-## Install on Windows PowerShell with one command
-
-Open Windows Terminal or PowerShell and run:
+## Install on Windows PowerShell
 
 ```powershell
 irm https://raw.githubusercontent.com/CPYMSU/LightHouse/main/install-windows.ps1 | iex
 ```
 
-The Windows installer:
-
-- installs Python 3.12, PostgreSQL 16 and Git through WinGet when missing;
-- creates the private local `lighthouse` PostgreSQL role and database;
-- installs LightHouse into `%USERPROFILE%\.lighthouse`;
-- protects control and model credentials with current-user Windows DPAPI;
-- adds `%USERPROFILE%\.lighthouse\bin\lh.cmd` to the user PATH;
-- registers a current-user `LightHouse` Scheduled Task at logon;
-- runs migrations, health checks and `lh doctor`.
-
-A fresh PostgreSQL installation is unattended. When an existing PostgreSQL
-installation has no LightHouse configuration, the installer asks for its
-`postgres` password. Model configuration can be supplied non-interactively with:
-
-```powershell
-$env:LIGHTHOUSE_MODEL_BASE_URL = "https://your-model-gateway.example/v1"
-$env:LIGHTHOUSE_MODEL = "lighthouse-default"
-$env:LIGHTHOUSE_MODEL_API_KEY = "your-lighthouse-token"
-irm https://raw.githubusercontent.com/CPYMSU/LightHouse/main/install-windows.ps1 | iex
-```
-
-No model API key is written to the repository or `config.json` on either
-platform.
+The Windows installer uses WinGet when dependencies are missing, protects
+credentials with current-user DPAPI, adds `lh.cmd` to the user PATH and registers
+a current-user `LightHouse` Scheduled Task. No model API key is written to the
+repository or `config.json` on either platform.
 
 ## Swiss Super Terminal
 
@@ -74,108 +53,161 @@ cd C:\path\to\project    # Windows PowerShell
 lh
 ```
 
-LightHouse automatically binds a confined local System Target and Desktop Target
-and selects `AUTO`, so one goal can cross both surfaces:
+LightHouse binds confined System/Desktop Targets, initializes the authorized
+file index and selects `AUTO`.
 
 ```text
 lh> create a Swiss-style dashboard.html and open it in the default browser
 ```
 
-The governed chain is:
+The run remains visible:
 
 ```text
-System Kernel: inspect project -> create/apply HTML change -> Receipt
-Desktop Kernel: resolve dashboard.html inside allowed root -> OS semantic open -> Receipt
-LightHouse Brain: verify both receipts -> final response
+01  PLAN       understand the goal
+02  CONTEXT    load project, conversation and file memory
+03  ADDRESS    ground cwd/path against indexed locators and Receipts
+03  THINK      select one exact capability
+04  EXECUTE    dispatch an immutable Operation
+05  CONFIRM    show the frozen action card
+06  VERIFY     read the durable Receipt
+08  COMPLETE   render the complete verified answer
 ```
 
-The Warehouse-inspired paper/ink/red interface keeps the active kernel profile,
-workspace, steps, confirmation cards and Receipts visible. During a run:
+## Memory Fabric 0.7
+
+The LightHouse Core PostgreSQL database now preserves:
+
+- complete user and assistant messages;
+- active/completed tasks and their subject file or URL;
+- canonical file, directory and URL locators;
+- file paths, types, sizes, hashes and bounded searchable text;
+- file revisions tied to successful Runs and Operations;
+- recent successful Receipt paths.
+
+The filesystem remains the source of truth. The index cannot expand authority
+beyond each System Target's explicit `allowed_roots`.
+
+Follow-ups such as:
 
 ```text
-01  PLAN       understand the requested goal
-02  CONTEXT    index project instructions and source state
-03  THINK      select one exact authorized capability
-04  EXECUTE    create and dispatch an immutable Operation
-05  CONFIRM    show a frozen action card when required
-06  VERIFY     read the durable Receipt and test the outcome
-08  COMPLETE   return the verified final answer
+make it richer
+continue the page from before
+open that file again
 ```
 
-A single task can also be sent directly:
+resolve the active subject before asking for another path. `/new` starts a new
+conversation while retaining long-term memory. `/reindex` refreshes authorized
+file and directory locators.
+
+### Address grounding
+
+The model may choose a capability, but it does not own execution coordinates.
+Before an Operation is created, the server compares every proposed `cwd/path`
+with:
+
+1. the bound Workspace root;
+2. the current task's active subject;
+3. indexed files and real directories;
+4. recent canonical locators;
+5. successful Receipt paths.
+
+An invented or previously unobserved absolute `cwd` is rejected. A referential
+request for `index.html` resolves to the canonical active file. New paths must be
+relative to the Workspace and use typed capabilities. Unrelated new tasks do not
+silently inherit the previous subject.
+
+### Typed directory creation
+
+Directory creation uses:
 
 ```text
-lh "create an HTML dashboard and open it in the default browser"
+system.directory.create.v1
 ```
+
+`mkdir` through arbitrary Bash is rejected; the Brain is also instructed not to
+use PowerShell `New-Item` for this purpose. The relative path is frozen, grounded
+and Receipt-backed.
+
+## Recoverable confirmation
+
+Confirmation no longer holds one HTTP request open through both command execution
+and the next model call. The Operation is first persisted as `RUNNING`, then the
+terminal polls PostgreSQL-backed state:
+
+```text
+EXECUTE / WAIT FOR OPERATION RECEIPT
+BRAIN / CONTINUE FROM RECEIPT
+```
+
+A terminal disconnect or client timeout cannot erase execution truth. The same
+Run and Operation can be resumed from PostgreSQL.
+
+## Terminal text contract
+
+Timeline rows may be summarized. The green final card and amber input card are
+authoritative and never truncate a long single logical line; their text folds to
+the terminal width.
 
 ## Desktop Kernel
 
-The Desktop Kernel uses semantic operating-system launch services rather than
-brittle mouse coordinates:
+The Desktop Kernel uses semantic operating-system services rather than mouse
+coordinates:
 
 - macOS: `/usr/bin/open` and Launch Services;
 - Windows: PowerShell `Start-Process` and the Windows shell.
 
-It exposes exact capabilities:
+Capabilities:
 
 - `desktop.browser.open_url.v1`
 - `desktop.file.open.v1`
 - `desktop.app.open.v1`
 
-Targets explicitly constrain project/file roots, URL schemes and applications.
-Opening an HTTP/HTTPS URL or a confined project file is a low-risk direct
-capability. Launching an allow-listed application creates an explicit
-confirmation Operation.
+Browser page interaction remains a future Playwright/CDP adapter behind the same
+Capability → Operation → Receipt contract.
 
-Browser page interaction is intentionally not simulated with mouse coordinates.
-A future Playwright/CDP adapter can add semantic DOM navigation, form filling and
-downloads behind the same Capability → Operation → Receipt contract.
+## Built-in surfaces
 
-## Built-in capabilities
+### System
 
-### System surface
+- local macOS/Linux Bash and Windows PowerShell;
+- OpenSSH Linux targets;
+- project context, bounded file read/search and atomic UTF-8 writes;
+- typed directory creation;
+- patch, test, Git and service operations.
 
-- local macOS/Linux Bash and Windows PowerShell targets;
-- OpenSSH Linux targets from macOS, Linux or Windows hosts;
-- project instruction and context loading;
-- bounded file read and search;
-- unified diff application;
-- shell and configured test execution;
-- Git status, diff and explicit-path commit;
-- systemd status/restart and journal reads on Linux;
-- Windows Service status/restart and filtered Event Log reads on Windows.
+### Data
 
-### Data surface
+- PostgreSQL federation through Data Target aliases;
+- schema graph and Resource Catalog synchronization;
+- semantic and typed Resource queries;
+- expert SQL with per-target policy;
+- transactional mutations with frozen confirmation.
 
-- PostgreSQL schema inspection;
-- server-enforced read-only queries;
-- transactional mutations with frozen confirmation and durable Receipts.
+### Brain
 
-### LightHouse Brain
-
-The native reasoning loop loads project and operation context, selects one exact
-authorized capability, submits an idempotent Operation, pauses for confirmation
-when required, observes the durable Receipt, verifies the result and resumes from
-PostgreSQL after a disconnect. The model never receives raw filesystem, shell,
-database or desktop authority.
+The native loop loads project, conversation, task, locator, file, data-world and
+Operation context; grounds execution addresses; selects an exact capability;
+observes Receipts; verifies outcomes; and resumes after disconnects. The model
+never receives raw filesystem, shell, database, desktop or address authority.
 
 ## Useful commands
 
 ```text
-lh                              # Swiss interactive terminal
+lh                              # Swiss terminal
 lh "task"                       # one natural-language task
-lh init [PATH]                  # bind System + Desktop targets
-lh login                        # replace the model key in the native secret store
-lh doctor                       # verify installation
-lh capabilities                 # inspect all active capabilities
-lh capabilities --kernel desktop
+lh init [PATH]                  # bind project targets and index files
+lh login                        # update the model key in the native secret store
+lh doctor                       # verify control plane, conversation and memory
+lh capabilities                 # inspect active capabilities
 lh mode auto|data|system|desktop
 ```
 
-Interactive controls include:
+Interactive controls:
 
 ```text
 /help
+/new
+/reindex
 /status
 /capabilities [query]
 /mode auto|system|data|desktop
@@ -186,27 +218,18 @@ Interactive controls include:
 /exit
 ```
 
-## Project instructions
-
-LightHouse reads bounded project guidance from:
-
-- `AGENTS.md`
-- `AGENTS.override.md`
-- `LIGHTHOUSE.md`
-- `.lighthouse/project.yaml`
-
 ## Security model
 
-- The HTTP service binds to `127.0.0.1` by default.
-- Secrets are stored in macOS Keychain or current-user Windows DPAPI.
+- The service binds to `127.0.0.1` by default.
+- Secrets use macOS Keychain or current-user Windows DPAPI.
 - High-risk writes freeze an exact Operation before confirmation.
-- Receipts, not client timeouts, are the source of execution truth.
-- Local System and Desktop targets are confined to explicit allowed roots.
-- Desktop URL schemes and applications are allow-listed per target.
+- Receipts, not client timeouts, are execution truth.
+- System/Desktop Targets and the file index remain inside allowed roots.
+- Unobserved execution addresses are rejected before dispatch.
+- Desktop URL schemes/applications are allow-listed.
 - SSH host-key checking remains strict by default.
-- Windows background execution uses a current-user Scheduled Task with limited privileges.
 
-## Upgrade an existing installation
+## Upgrade
 
 ### macOS
 
@@ -218,22 +241,12 @@ launchctl kickstart -k gui/$(id -u)/com.cpym.su.lighthouse
 lh migrate
 ```
 
-### Windows PowerShell
-
-The installer is idempotent and also performs upgrades:
+### Windows
 
 ```powershell
 irm https://raw.githubusercontent.com/CPYMSU/LightHouse/main/install-windows.ps1 | iex
 ```
 
-To remove LightHouse while leaving PostgreSQL and its databases untouched:
-
-```powershell
-irm https://raw.githubusercontent.com/CPYMSU/LightHouse/main/uninstall-windows.ps1 | iex
-```
-
-Then enter a project and run `lh`; LightHouse creates the platform-native System
-and Desktop Targets and switches the local workspace to `AUTO`.
-
-See `docs/ARCHITECTURE.md`, `docs/AGENT_RUNTIME.md`, `docs/TERMINAL_UI.md` and
-`docs/DESKTOP_KERNEL.md` for internal contracts.
+See `docs/ARCHITECTURE.md`, `docs/AGENT_RUNTIME.md`, `docs/TERMINAL_UI.md`,
+`docs/DESKTOP_KERNEL.md`, `docs/DATA_KERNEL_1.0.md` and
+`docs/MEMORY_FABRIC.md`.
