@@ -16,4 +16,5 @@ jobs:
       - run: python -m pip install --upgrade pip
       - run: python -m pip install -e '.[dev]'
       - run: python -m compileall -q src tests
+      - run: bash -n install-macos.sh uninstall-macos.sh
       - run: pytest -q
