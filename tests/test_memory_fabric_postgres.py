@@ -37,7 +37,7 @@ def test_messages_tasks_locators_and_files_survive_across_runs(tmp_path):
     memory.link_run(run1, conversation["id"])
     memory.record_message(conversation_id=conversation["id"], role="user", content="把桌面的 index.html 做得酷炫一些", run_id=run1)
     memory.start_task(run_id=run1, conversation_id=conversation["id"], goal="把桌面的 index.html 做得酷炫一些")
-    memory.project_operation(run1, {"operation": {"id": str(uuid4()), "capability": "system.file.write.v1", "envelope": {"arguments": {"path": "Desktop/index.html"}}}, "receipt": {"ok": True, "result": {"path": str(html), "relative_path": "Desktop/index.html", "sha256": hashlib.sha256(content.encode()).hexdigest()}}})
+    memory.project_operation(run1, {"operation": {"capability": "system.file.write.v1", "envelope": {"arguments": {"path": "Desktop/index.html"}}}, "receipt": {"ok": True, "result": {"path": str(html), "relative_path": "Desktop/index.html", "sha256": hashlib.sha256(content.encode()).hexdigest()}}})
     memory.complete_task(run1, status="succeeded", summary="已修改並打開桌面 index.html")
 
     run2 = str(uuid4())
