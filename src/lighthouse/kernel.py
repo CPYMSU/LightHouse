@@ -8,22 +8,34 @@ from .repository import Repository
 
 
 class OperationKernel:
-    def __init__(self, repository: Repository, registry: CapabilityRegistry, executors: dict[str, Any]):
+    def __init__(
+        self,
+        repository: Repository,
+        registry: CapabilityRegistry,
+        executors: dict[str, Any],
+        *,
+        target_resolver: Any | None = None,
+        data_catalog: Any | None = None,
+    ):
         self.repository = repository
         self.registry = registry
         self.executors = dict(executors)
+        self.target_resolver = target_resolver
+        self.data_catalog = data_catalog
 
     def submit(self, request: OperationRequest) -> dict[str, Any]:
         capability = self.registry.get(request.capability)
         if request.mode not in {KernelMode.AUTO, capability.kernel}:
             raise ValueError(f"capability requires {capability.kernel.value} mode")
         workspace = self.repository.get_workspace(request.workspace_id)
-        target_by_kernel = {
-            KernelMode.DATA: workspace.data_target_id,
-            KernelMode.SYSTEM: workspace.system_target_id,
-            KernelMode.DESKTOP: workspace.desktop_target_id,
-        }
-        target_id = target_by_kernel.get(capability.kernel)
+        if self.target_resolver is not None:
+            target_id = self.target_resolver.resolve(workspace, capability.kernel, request.arguments)
+        else:
+            target_id = {
+                KernelMode.DATA: workspace.data_target_id,
+                KernelMode.SYSTEM: workspace.system_target_id,
+                KernelMode.DESKTOP: workspace.desktop_target_id,
+            }.get(capability.kernel)
         if not target_id:
             raise ValueError(f"workspace has no {capability.kernel.value} target")
         target = self.repository.get_target(target_id)
@@ -74,7 +86,10 @@ class OperationKernel:
             raise RuntimeError(f"executor is not configured: {capability.executor}")
         self.repository.append_event(operation_id, "execution_started", {"executor": capability.executor})
         try:
-            execution: ExecutionResult = executor.execute(capability, target, claimed.envelope.get("arguments") or {})
+            execution_arguments = dict(claimed.envelope.get("arguments") or {})
+            execution_arguments["__workspace_id"] = claimed.workspace_id
+            execution_arguments["__operation_id"] = claimed.id
+            execution: ExecutionResult = executor.execute(capability, target, execution_arguments)
             payload = json_safe(execution.result)
             receipt = self.repository.save_receipt(operation_id, ok=execution.ok, result=payload)
             status = OperationStatus.SUCCEEDED if execution.ok else OperationStatus.FAILED
