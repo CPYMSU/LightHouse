@@ -45,7 +45,20 @@ jobs:
             $allErrors += @($parseErrors)
           }
           if ($allErrors.Count) { throw ($allErrors | Format-List | Out-String) }
-      - run: pytest -q
+      - name: Run pytest
+        shell: bash
+        run: |
+          set +e
+          pytest -q --tb=short 2>&1 | tee pytest-linux.log
+          status=${PIPESTATUS[0]}
+          exit $status
+      - name: Upload pytest diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pytest-linux-${{ github.run_attempt }}
+          path: pytest-linux.log
+          if-no-files-found: error
 
   windows:
     runs-on: windows-latest
