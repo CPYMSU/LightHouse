@@ -109,16 +109,23 @@ def _project_test_command(path: Path) -> str | None:
     return None
 
 
+def _named(items: list[dict[str, Any]], name: str) -> dict[str, Any] | None:
+    return next((item for item in items if item.get("name") == name), None)
+
+
 def ensure_workspace(client: legacy.Client, config: dict[str, Any], project_path: Path) -> str:
+    """Create/reuse the local System + Desktop execution coordinate."""
     project_path = project_path.expanduser().resolve()
     if not project_path.is_dir():
         raise legacy.CLIError(f"project path does not exist: {project_path}")
     identity = hashlib.sha256(str(project_path).encode("utf-8")).hexdigest()[:12]
-    target_name = f"local-{identity}"
-    workspace_name = f"workspace-{identity}"
+    system_name = f"local-system-{identity}"
+    desktop_name = f"local-desktop-{identity}"
+    workspace_name = f"workspace-{identity}-desktop"
+
     targets = client.request("GET", "/v1/targets").get("items", [])
-    target = next((item for item in targets if item.get("name") == target_name), None)
-    if target is None:
+    system_target = _named(targets, system_name)
+    if system_target is None:
         target_config: dict[str, Any] = {
             "transport": "local",
             "default_cwd": str(project_path),
@@ -128,21 +135,44 @@ def ensure_workspace(client: legacy.Client, config: dict[str, Any], project_path
         test_command = _project_test_command(project_path)
         if test_command:
             target_config["test_command"] = test_command
-        target = client.request("POST", "/v1/targets", {"name": target_name, "kind": "system", "config": target_config})
+        system_target = client.request("POST", "/v1/targets", {
+            "name": system_name,
+            "kind": "system",
+            "config": target_config,
+        })
+
+    desktop_target = _named(targets, desktop_name)
+    if desktop_target is None:
+        desktop_target = client.request("POST", "/v1/targets", {
+            "name": desktop_name,
+            "kind": "desktop",
+            "config": {
+                "platform": "macos",
+                "default_cwd": str(project_path),
+                "allowed_roots": [str(project_path)],
+                "allowed_apps": ["Safari", "Google Chrome", "Firefox", "Arc", "Finder"],
+                "allowed_schemes": ["http", "https", "file"],
+                "browser": "default",
+            },
+        })
+
     workspaces = client.request("GET", "/v1/workspaces").get("items", [])
-    workspace = next((item for item in workspaces if item.get("name") == workspace_name), None)
+    workspace = _named(workspaces, workspace_name)
     if workspace is None:
         workspace = client.request("POST", "/v1/workspaces", {
             "name": workspace_name,
             "data_target_id": None,
-            "system_target_id": target["id"],
+            "system_target_id": system_target["id"],
+            "desktop_target_id": desktop_target["id"],
         })
+
     config.update({
         "workspace": workspace["id"],
         "workspace_name": workspace_name,
-        "mode": "system",
+        "mode": "auto",
         "actor": config.get("actor") or getpass.getuser(),
         "project_path": str(project_path),
+        "desktop_target": desktop_target["id"],
     })
     _save(config)
     return str(workspace["id"])
@@ -153,13 +183,9 @@ def init_project(path: str | None = None, *, ui: SwissTerminal | None = None) ->
     _path, config = _config()
     client = _client(config)
     project = Path(path or os.getcwd())
-    with ui.busy("WORKSPACE / BIND PROJECT"):
+    with ui.busy("WORKSPACE / BIND SYSTEM + DESKTOP"):
         workspace_id = ensure_workspace(client, config, project)
-    ui.notice(
-        "WORKSPACE READY",
-        f"{project.resolve()}\nWorkspace {workspace_id}",
-        tone="green",
-    )
+    ui.notice("WORKSPACE READY", f"{project.resolve()}\nWorkspace {workspace_id}\nKernels SYSTEM + DESKTOP", tone="green")
     return 0
 
 
@@ -172,6 +198,8 @@ def doctor(*, ui: SwissTerminal | None = None) -> int:
         "url": _base_url(config),
         "workspace": config.get("workspace"),
         "project_path": config.get("project_path"),
+        "desktop_target": config.get("desktop_target"),
+        "kernel_profile": config.get("mode") or "auto",
     }
     try:
         checks["api"] = _client(config).request("GET", "/healthz")
@@ -181,13 +209,7 @@ def doctor(*, ui: SwissTerminal | None = None) -> int:
     return 0 if checks["control_key"] else 2
 
 
-def _drive_run(
-    client: legacy.Client,
-    snapshot: dict[str, Any],
-    *,
-    actor: str,
-    ui: SwissTerminal,
-) -> dict[str, Any]:
+def _drive_run(client: legacy.Client, snapshot: dict[str, Any], *, actor: str, ui: SwissTerminal) -> dict[str, Any]:
     seen: set[tuple[Any, ...]] = set()
     while True:
         seen = ui.render_run(snapshot, seen=seen)
@@ -232,9 +254,8 @@ def run_task(
         _path, config = _config()
     client = client or _client(config)
     project = Path.cwd().resolve()
-    if config.get("project_path") != str(project) or not config.get("workspace"):
-        with ui.busy("WORKSPACE / RESOLVE"):
-            ensure_workspace(client, config, project)
+    with ui.busy("WORKSPACE / RESOLVE THREE KERNELS"):
+        ensure_workspace(client, config, project)
     actor = str(config.get("actor") or getpass.getuser())
     ui.task_banner(task)
     with ui.busy("THINK / BUILD PLAN"):
@@ -242,7 +263,7 @@ def run_task(
             "task": task,
             "workspace_id": config["workspace"],
             "actor": actor,
-            "mode": config.get("mode") or "system",
+            "mode": config.get("mode") or "auto",
             "max_steps": 16,
             "auto_confirm": bool(auto_confirm),
         })
@@ -253,7 +274,7 @@ def run_task(
 def _redraw(ui: SwissTerminal, config: dict[str, Any], *, brain: str = "READY") -> None:
     ui.clear()
     ui.masthead(
-        mode=str(config.get("mode") or "system"),
+        mode=str(config.get("mode") or "auto"),
         workspace=str(config.get("workspace_name") or config.get("workspace") or "local"),
         project=str(config.get("project_path") or os.getcwd()),
         brain=brain,
@@ -288,16 +309,15 @@ def interactive() -> int:
     _path, config = _config()
     client = _client(config)
     current_project = Path.cwd().resolve()
-    if config.get("project_path") != str(current_project) or not config.get("workspace"):
-        with ui.busy("WORKSPACE / BIND CURRENT PROJECT"):
-            ensure_workspace(client, config, current_project)
+    with ui.busy("WORKSPACE / BIND SYSTEM + DESKTOP"):
+        ensure_workspace(client, config, current_project)
     _redraw(ui, config)
     history_path = Path.home() / ".lighthouse" / "history"
     session = ui.session(history_path)
     while True:
         try:
             line = ui.prompt(
-                mode=str(config.get("mode") or "system"),
+                mode=str(config.get("mode") or "auto"),
                 project=str(config.get("project_path") or current_project),
                 session=session,
             )
@@ -323,8 +343,8 @@ def interactive() -> int:
             continue
         if line.startswith("/mode"):
             requested = line[len("/mode"):].strip().lower()
-            if requested not in {"auto", "system", "data"}:
-                ui.notice("MODE", "Use /mode auto, /mode system or /mode data.", tone="amber")
+            if requested not in {"auto", "system", "data", "desktop"}:
+                ui.notice("MODE", "Use /mode auto, /mode system, /mode data or /mode desktop.", tone="amber")
                 continue
             config["mode"] = requested
             _save(config)
@@ -360,11 +380,12 @@ def help_text() -> None:
     print("""LightHouse OS — integrated LightHouse terminal
 
   lh                         open the Swiss interactive terminal
-  lh \"task\"                  run one natural-language task
-  lh init [PATH]             bind the current project to LightHouse
+  lh "task"                  run one natural-language task across kernels
+  lh init [PATH]             bind System + Desktop targets for a project
   lh login                   store the model key in macOS Keychain
   lh doctor                  verify the local installation
   lh capabilities            list governed capabilities
+  lh mode desktop            select only the Desktop Kernel
   lh run ...                 execute an exact capability
   lh agent ...               compatibility alias for scripted runs
 """)
