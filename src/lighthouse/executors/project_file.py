@@ -13,7 +13,7 @@ _MAX_CONTENT_BYTES = 2_000_000
 
 
 class ProjectFileExecutor:
-    """Typed local project-file writer used by the System Kernel."""
+    """Typed local project filesystem writer used by the System Kernel."""
 
     def execute(
         self,
@@ -21,25 +21,28 @@ class ProjectFileExecutor:
         target: Target,
         arguments: dict[str, Any],
     ) -> ExecutionResult:
-        if capability.operation != "file_write":
-            raise ValueError(f"unsupported project file operation: {capability.operation}")
         if str(target.config.get("transport") or "local").lower() != "local":
-            raise RuntimeError("typed project file writing currently requires a local System Target")
+            raise RuntimeError("typed project filesystem operations require a local System Target")
+        if capability.operation == "file_write":
+            return self._file_write(target, arguments)
+        if capability.operation == "directory_create":
+            return self._directory_create(target, arguments)
+        raise ValueError(f"unsupported project file operation: {capability.operation}")
 
+    def _file_write(self, target: Target, arguments: dict[str, Any]) -> ExecutionResult:
         relative = self._relative_path(arguments.get("path"))
         content = str(arguments.get("content") if arguments.get("content") is not None else "")
         encoded = content.encode("utf-8")
         if len(encoded) > _MAX_CONTENT_BYTES:
             raise ValueError("file content exceeds the 2 MB limit")
 
-        cwd = Path(str(target.config.get("default_cwd") or "/")).expanduser().resolve()
-        destination = cwd.joinpath(*PurePosixPath(relative).parts)
-        parent = destination.parent.resolve()
-        roots = [Path(str(item)).expanduser().resolve() for item in (target.config.get("allowed_roots") or [cwd])]
+        cwd, destination, roots = self._resolve_destination(target, relative)
+        parent = destination.parent
         if not any(parent == root or root in parent.parents for root in roots):
             raise PermissionError("file path is outside the target's allowed roots")
         if not parent.exists() or not parent.is_dir() or parent.is_symlink():
             raise FileNotFoundError("destination parent directory must be an existing regular directory")
+        self._reject_symlink_chain(cwd, parent)
         if destination.exists() and destination.is_symlink():
             raise PermissionError("refusing to replace a symbolic link")
         existed = destination.exists()
@@ -73,6 +76,49 @@ class ProjectFileExecutor:
             "replaced": existed,
         }
         return ExecutionResult(ok=True, result=result, exit_code=0)
+
+    def _directory_create(self, target: Target, arguments: dict[str, Any]) -> ExecutionResult:
+        relative = self._relative_path(arguments.get("path"))
+        cwd, destination, roots = self._resolve_destination(target, relative)
+        if not any(destination == root or root in destination.parents for root in roots):
+            raise PermissionError("directory path is outside the target's allowed roots")
+        self._reject_symlink_chain(cwd, destination.parent)
+        if destination.exists() and destination.is_symlink():
+            raise PermissionError("refusing to use a symbolic-link directory")
+        if destination.exists() and not destination.is_dir():
+            raise FileExistsError("destination exists and is not a directory")
+        existed = destination.exists()
+        parents = bool(arguments.get("parents", True))
+        destination.mkdir(parents=parents, exist_ok=True)
+        return ExecutionResult(
+            ok=True,
+            result={
+                "path": str(destination),
+                "relative_path": relative,
+                "created": not existed,
+                "already_existed": existed,
+            },
+            exit_code=0,
+        )
+
+    @staticmethod
+    def _resolve_destination(target: Target, relative: str) -> tuple[Path, Path, list[Path]]:
+        cwd = Path(str(target.config.get("default_cwd") or "/")).expanduser().resolve()
+        destination = cwd.joinpath(*PurePosixPath(relative).parts)
+        roots = [Path(str(item)).expanduser().resolve() for item in (target.config.get("allowed_roots") or [cwd])]
+        return cwd, destination, roots
+
+    @staticmethod
+    def _reject_symlink_chain(cwd: Path, destination_parent: Path) -> None:
+        try:
+            relative = destination_parent.relative_to(cwd)
+        except ValueError:
+            return
+        current = cwd
+        for part in relative.parts:
+            current = current / part
+            if current.exists() and current.is_symlink():
+                raise PermissionError("directory path may not traverse a symbolic link")
 
     @staticmethod
     def _relative_path(value: Any) -> str:
