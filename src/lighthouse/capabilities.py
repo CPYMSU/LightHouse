@@ -15,30 +15,47 @@ def _terms(value: str) -> set[str]:
     return words
 
 
+def _cap(
+    tool_name: str,
+    command: str,
+    description: str,
+    kernel: KernelMode,
+    executor: str,
+    operation: str,
+    risk: Risk,
+    confirmation: ConfirmationMode,
+    writes: bool,
+    *,
+    aliases: tuple[str, ...] = (),
+    arguments: dict | None = None,
+) -> Capability:
+    return Capability(
+        tool_name=tool_name,
+        command=command,
+        description=description,
+        kernel=kernel,
+        executor=executor,
+        operation=operation,
+        risk=risk,
+        confirmation=confirmation,
+        writes=writes,
+        aliases=aliases,
+        arguments=arguments or {},
+    )
+
+
 DEFAULT_CAPABILITIES: tuple[Capability, ...] = (
-    Capability(
-        tool_name="data.schema.inspect.v1",
-        command="data schema",
-        description="Inspect PostgreSQL schemas, tables and columns",
-        kernel=KernelMode.DATA,
-        executor="postgres",
-        operation="schema",
-        risk=Risk.LOW,
-        confirmation=ConfirmationMode.DIRECT,
-        writes=False,
+    _cap(
+        "data.schema.inspect.v1", "data schema",
+        "Inspect PostgreSQL schemas, tables and columns",
+        KernelMode.DATA, "postgres", "schema", Risk.LOW, ConfirmationMode.DIRECT, False,
         aliases=("db schema", "database schema", "資料庫結構", "數據庫結構"),
         arguments={"schema": {"type": "string", "required": False}},
     ),
-    Capability(
-        tool_name="data.sql.query.v1",
-        command="data query",
-        description="Run a read-only PostgreSQL query with bound parameters",
-        kernel=KernelMode.DATA,
-        executor="postgres",
-        operation="query",
-        risk=Risk.LOW,
-        confirmation=ConfirmationMode.DIRECT,
-        writes=False,
+    _cap(
+        "data.sql.query.v1", "data query",
+        "Run a read-only PostgreSQL query with bound parameters",
+        KernelMode.DATA, "postgres", "query", Risk.LOW, ConfirmationMode.DIRECT, False,
         aliases=("db query", "sql query", "查詢數據庫"),
         arguments={
             "sql": {"type": "string", "required": True},
@@ -46,32 +63,65 @@ DEFAULT_CAPABILITIES: tuple[Capability, ...] = (
             "limit": {"type": "integer", "required": False},
         },
     ),
-    Capability(
-        tool_name="data.sql.exec.v1",
-        command="data exec",
-        description="Execute a PostgreSQL mutation in one transaction and persist its receipt",
-        kernel=KernelMode.DATA,
-        executor="postgres",
-        operation="exec",
-        risk=Risk.HIGH,
-        confirmation=ConfirmationMode.EXPLICIT,
-        writes=True,
+    _cap(
+        "data.sql.exec.v1", "data exec",
+        "Execute a PostgreSQL mutation in one transaction and persist its receipt",
+        KernelMode.DATA, "postgres", "exec", Risk.HIGH, ConfirmationMode.EXPLICIT, True,
         aliases=("db exec", "sql exec", "修改數據庫", "執行 sql"),
         arguments={
             "sql": {"type": "string", "required": True},
             "params": {"type": "array", "required": False},
         },
     ),
-    Capability(
-        tool_name="system.shell.exec.v1",
-        command="system exec",
-        description="Run a shell command on a local or SSH Linux target",
-        kernel=KernelMode.SYSTEM,
-        executor="system",
-        operation="shell_exec",
-        risk=Risk.HIGH,
-        confirmation=ConfirmationMode.EXPLICIT,
-        writes=True,
+    _cap(
+        "system.project.context.v1", "project context",
+        "Read the repository file index and project instruction documents",
+        KernelMode.SYSTEM, "system", "project_context", Risk.LOW, ConfirmationMode.DIRECT, False,
+        aliases=("codebase context", "project memory", "代碼庫上下文", "項目記憶"),
+        arguments={
+            "cwd": {"type": "string", "required": False},
+            "max_files": {"type": "integer", "required": False},
+            "max_instruction_bytes": {"type": "integer", "required": False},
+        },
+    ),
+    _cap(
+        "system.file.read.v1", "file read",
+        "Read a UTF-8 project file inside the selected working directory",
+        KernelMode.SYSTEM, "system", "file_read", Risk.LOW, ConfirmationMode.DIRECT, False,
+        aliases=("read file", "查看文件"),
+        arguments={
+            "path": {"type": "string", "required": True},
+            "cwd": {"type": "string", "required": False},
+            "max_bytes": {"type": "integer", "required": False},
+        },
+    ),
+    _cap(
+        "system.file.search.v1", "file search",
+        "Search project files with ripgrep-compatible text matching",
+        KernelMode.SYSTEM, "system", "file_search", Risk.LOW, ConfirmationMode.DIRECT, False,
+        aliases=("grep", "rg", "搜索代碼", "查找文件"),
+        arguments={
+            "query": {"type": "string", "required": True},
+            "path": {"type": "string", "required": False},
+            "cwd": {"type": "string", "required": False},
+            "max_results": {"type": "integer", "required": False},
+        },
+    ),
+    _cap(
+        "system.file.patch.v1", "file patch",
+        "Apply one unified diff to a Git working tree using git apply",
+        KernelMode.SYSTEM, "system", "file_patch", Risk.HIGH, ConfirmationMode.EXPLICIT, True,
+        aliases=("apply patch", "修改代碼", "套用補丁"),
+        arguments={
+            "patch": {"type": "string", "required": True},
+            "cwd": {"type": "string", "required": False},
+            "check": {"type": "boolean", "required": False},
+        },
+    ),
+    _cap(
+        "system.shell.exec.v1", "system exec",
+        "Run a shell command on a local or SSH Linux target",
+        KernelMode.SYSTEM, "system", "shell_exec", Risk.HIGH, ConfirmationMode.EXPLICIT, True,
         aliases=("shell exec", "bash", "運行服務器命令", "執行終端指令"),
         arguments={
             "command": {"type": "string", "required": True},
@@ -79,60 +129,69 @@ DEFAULT_CAPABILITIES: tuple[Capability, ...] = (
             "timeout": {"type": "integer", "required": False},
         },
     ),
-    Capability(
-        tool_name="system.service.status.v1",
-        command="service status",
-        description="Read a systemd service status from a Linux target",
-        kernel=KernelMode.SYSTEM,
-        executor="system",
-        operation="service_status",
-        risk=Risk.LOW,
-        confirmation=ConfirmationMode.DIRECT,
-        writes=False,
+    _cap(
+        "system.test.run.v1", "test run",
+        "Run the project test command and capture its output",
+        KernelMode.SYSTEM, "system", "test_run", Risk.NORMAL, ConfirmationMode.EXPLICIT, True,
+        aliases=("run tests", "pytest", "運行測試"),
+        arguments={
+            "command": {"type": "string", "required": False},
+            "cwd": {"type": "string", "required": False},
+            "timeout": {"type": "integer", "required": False},
+        },
+    ),
+    _cap(
+        "system.service.status.v1", "service status",
+        "Read a systemd service status from a Linux target",
+        KernelMode.SYSTEM, "system", "service_status", Risk.LOW, ConfirmationMode.DIRECT, False,
         aliases=("systemctl status", "服務狀態"),
         arguments={"service": {"type": "string", "required": True}},
     ),
-    Capability(
-        tool_name="system.service.restart.v1",
-        command="service restart",
-        description="Restart a systemd service and capture the command receipt",
-        kernel=KernelMode.SYSTEM,
-        executor="system",
-        operation="service_restart",
-        risk=Risk.HIGH,
-        confirmation=ConfirmationMode.EXPLICIT,
-        writes=True,
+    _cap(
+        "system.service.restart.v1", "service restart",
+        "Restart a systemd service and capture the command receipt",
+        KernelMode.SYSTEM, "system", "service_restart", Risk.HIGH, ConfirmationMode.EXPLICIT, True,
         aliases=("systemctl restart", "重啟服務"),
         arguments={"service": {"type": "string", "required": True}},
     ),
-    Capability(
-        tool_name="system.journal.read.v1",
-        command="journal read",
-        description="Read recent systemd journal lines for one service",
-        kernel=KernelMode.SYSTEM,
-        executor="system",
-        operation="journal_read",
-        risk=Risk.LOW,
-        confirmation=ConfirmationMode.DIRECT,
-        writes=False,
+    _cap(
+        "system.journal.read.v1", "journal read",
+        "Read recent systemd journal lines for one service",
+        KernelMode.SYSTEM, "system", "journal_read", Risk.LOW, ConfirmationMode.DIRECT, False,
         aliases=("journalctl", "查看日誌", "服務日誌"),
         arguments={
             "service": {"type": "string", "required": True},
             "lines": {"type": "integer", "required": False},
         },
     ),
-    Capability(
-        tool_name="system.git.status.v1",
-        command="git status",
-        description="Read concise Git repository status on a Linux target",
-        kernel=KernelMode.SYSTEM,
-        executor="system",
-        operation="git_status",
-        risk=Risk.LOW,
-        confirmation=ConfirmationMode.DIRECT,
-        writes=False,
+    _cap(
+        "system.git.status.v1", "git status",
+        "Read concise Git repository status on a Linux target",
+        KernelMode.SYSTEM, "system", "git_status", Risk.LOW, ConfirmationMode.DIRECT, False,
         aliases=("查看 git 狀態",),
         arguments={"cwd": {"type": "string", "required": False}},
+    ),
+    _cap(
+        "system.git.diff.v1", "git diff",
+        "Read the current Git diff without invoking external diff tools",
+        KernelMode.SYSTEM, "system", "git_diff", Risk.LOW, ConfirmationMode.DIRECT, False,
+        aliases=("查看代碼修改", "show diff"),
+        arguments={
+            "cwd": {"type": "string", "required": False},
+            "staged": {"type": "boolean", "required": False},
+            "max_bytes": {"type": "integer", "required": False},
+        },
+    ),
+    _cap(
+        "system.git.commit.v1", "git commit",
+        "Stage selected paths and create a Git commit",
+        KernelMode.SYSTEM, "system", "git_commit", Risk.HIGH, ConfirmationMode.EXPLICIT, True,
+        aliases=("提交代碼",),
+        arguments={
+            "message": {"type": "string", "required": True},
+            "paths": {"type": "array", "required": False},
+            "cwd": {"type": "string", "required": False},
+        },
     ),
 )
 
@@ -152,6 +211,9 @@ class CapabilityRegistry:
 
     def list(self, *, kernel: KernelMode | None = None) -> list[Capability]:
         return [item for item in self._capabilities if kernel in {None, KernelMode.AUTO, item.kernel}]
+
+    def atlas(self, *, kernel: KernelMode | None = None) -> list[dict]:
+        return [item.public_dict() for item in self.list(kernel=kernel)]
 
     def search(self, query: str, *, kernel: KernelMode | None = None, limit: int = 20) -> list[Capability]:
         query = (query or "").strip().lower()

@@ -45,6 +45,16 @@ class OperationStatus(StrEnum):
     CANCELLED = "cancelled"
 
 
+class AgentRunStatus(StrEnum):
+    CREATED = "created"
+    RUNNING = "running"
+    AWAITING_CONFIRMATION = "awaiting_confirmation"
+    WAITING_INPUT = "waiting_input"
+    SUCCEEDED = "succeeded"
+    FAILED = "failed"
+    CANCELLED = "cancelled"
+
+
 def utc_now() -> datetime:
     return datetime.now(timezone.utc)
 
@@ -66,7 +76,13 @@ def json_safe(value: Any) -> Any:
 
 
 def canonical_json(value: Any) -> str:
-    return json.dumps(json_safe(value), ensure_ascii=False, allow_nan=False, sort_keys=True, separators=(",", ":"))
+    return json.dumps(
+        json_safe(value),
+        ensure_ascii=False,
+        allow_nan=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
 
 
 def digest_json(value: Any) -> str:
@@ -116,6 +132,7 @@ class Workspace:
     name: str
     data_target_id: str | None
     system_target_id: str | None
+    config: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -176,6 +193,40 @@ class OperationView:
             "envelope": self.envelope,
             "envelope_hash": self.envelope_hash,
             "request_hash": self.request_hash,
+            "created_at": self.created_at.isoformat(),
+            "updated_at": self.updated_at.isoformat(),
+        }
+
+
+@dataclass(frozen=True)
+class AgentRunView:
+    id: str
+    task: str
+    workspace_id: str
+    actor: str
+    mode: KernelMode
+    status: AgentRunStatus
+    max_steps: int
+    current_step: int
+    auto_confirm: bool
+    pending_operation_id: str | None
+    final_message: str | None
+    created_at: datetime
+    updated_at: datetime
+
+    def public_dict(self) -> dict[str, Any]:
+        return {
+            "id": self.id,
+            "task": self.task,
+            "workspace_id": self.workspace_id,
+            "actor": self.actor,
+            "mode": self.mode.value,
+            "status": self.status.value,
+            "max_steps": self.max_steps,
+            "current_step": self.current_step,
+            "auto_confirm": self.auto_confirm,
+            "pending_operation_id": self.pending_operation_id,
+            "final_message": self.final_message,
             "created_at": self.created_at.isoformat(),
             "updated_at": self.updated_at.isoformat(),
         }

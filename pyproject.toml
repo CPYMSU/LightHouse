@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "lighthouse-os"
-version = "0.1.0"
+version = "0.2.0"
 description = "PostgreSQL and Linux dual-executor AI operation kernel"
 readme = "README.md"
 requires-python = ">=3.11"
