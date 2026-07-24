@@ -68,5 +68,18 @@ jobs:
             $allErrors += @($parseErrors)
           }
           if ($allErrors.Count) { throw ($allErrors | Format-List | Out-String) }
+      - name: Exercise Invoke-Expression bootstrap under StrictMode
+        shell: powershell
+        run: |
+          $env:LIGHTHOUSE_BOOTSTRAP_VALIDATE = '1'
+          try {
+            $output = (Get-Content -LiteralPath install-windows.ps1 -Raw | Invoke-Expression | Out-String).Trim()
+            if ($output -ne 'LightHouse Windows bootstrap OK') {
+              throw "unexpected bootstrap output: $output"
+            }
+          }
+          finally {
+            Remove-Item Env:LIGHTHOUSE_BOOTSTRAP_VALIDATE -ErrorAction SilentlyContinue
+          }
       - name: Run Windows-native contract tests
         run: python -m pytest -q tests/test_windows_support.py tests/test_cli_errors.py

@@ -136,10 +136,10 @@ def test_windows_dpapi_round_trip(tmp_path, monkeypatch):
     assert secrets.keychain_get(service) is None
 
 
-def test_windows_installer_declares_native_dependencies_and_background_task():
+def test_windows_installer_is_strictmode_safe_bootstrap():
     script = Path("install-windows.ps1").read_text(encoding="utf-8")
-    assert "Python.Python.3.12" in script
-    assert "PostgreSQL.PostgreSQL.16" in script
-    assert "Git.Git" in script
-    assert "Register-ScheduledTask" in script
-    assert "Windows DPAPI" in script
+    assert "$MyInvocation.MyCommand.Path" not in script
+    assert "$CoreCommit = 'f2ae0df9d69144218bcc68cb6538cae1755923fe'" in script
+    assert "LIGHTHOUSE_BOOTSTRAP_VALIDATE" in script
+    assert "LIGHTHOUSE_INSTALL_FROM_FILE" in script
+    assert "powershell.exe" in script
