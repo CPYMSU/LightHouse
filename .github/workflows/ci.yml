@@ -6,7 +6,7 @@ on:
   pull_request:
 
 jobs:
-  test:
+  linux:
     runs-on: ubuntu-latest
     services:
       postgres:
@@ -34,4 +34,39 @@ jobs:
       - run: python -m pip install -e '.[dev]'
       - run: python -m compileall -q src tests
       - run: bash -n install-macos.sh uninstall-macos.sh
+      - name: Parse Windows PowerShell installers
+        shell: pwsh
+        run: |
+          $allErrors = @()
+          foreach ($file in @('install-windows.ps1', 'uninstall-windows.ps1')) {
+            $tokens = $null
+            $parseErrors = $null
+            [void][System.Management.Automation.Language.Parser]::ParseFile((Resolve-Path $file), [ref]$tokens, [ref]$parseErrors)
+            $allErrors += @($parseErrors)
+          }
+          if ($allErrors.Count) { throw ($allErrors | Format-List | Out-String) }
       - run: pytest -q
+
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: python -m pip install --upgrade pip
+      - run: python -m pip install -e ".[dev]"
+      - run: python -m compileall -q src tests
+      - name: Parse Windows PowerShell installers
+        shell: powershell
+        run: |
+          $allErrors = @()
+          foreach ($file in @('install-windows.ps1', 'uninstall-windows.ps1')) {
+            $tokens = $null
+            $parseErrors = $null
+            [void][System.Management.Automation.Language.Parser]::ParseFile((Resolve-Path $file), [ref]$tokens, [ref]$parseErrors)
+            $allErrors += @($parseErrors)
+          }
+          if ($allErrors.Count) { throw ($allErrors | Format-List | Out-String) }
+      - name: Run Windows-native contract tests
+        run: python -m pytest -q tests/test_windows_support.py tests/test_cli_errors.py
