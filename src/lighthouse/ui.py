@@ -68,14 +68,14 @@ _STAGE = {
 
 
 def _text(value: Any, style: str | None = None, *, max_chars: int | None = None) -> Text:
-    string = "—" if value in {None, ""} else str(value)
+    string = "—" if value is None or value == "" else str(value)
     if max_chars and len(string) > max_chars:
         string = string[: max_chars - 1] + "…"
     return Text(string, style=style or "")
 
 
 def _short(value: Any, limit: int = 180) -> str:
-    if value in {None, ""}:
+    if value is None or value == "":
         return "—"
     if isinstance(value, str):
         text = value
@@ -406,7 +406,7 @@ class SwissTerminal:
                 ok = value.get("status") == "ok" or value.get("ok") is True
                 detail = _short(value)
             else:
-                ok = value not in {None, "", False}
+                ok = value is not None and value != "" and value is not False
                 detail = _short(value)
             table.add_row(
                 Text(str(name).replace("_", " ").upper(), style=PAPER),
