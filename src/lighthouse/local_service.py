@@ -32,21 +32,18 @@ def _read_config() -> dict[str, object]:
 def _matching_default_instance(base_url: str) -> bool:
     try:
         requested = urlsplit(base_url)
-    except ValueError:
-        return False
-    if requested.hostname not in {"localhost", "127.0.0.1", "::1"}:
-        return False
-    config = _read_config()
-    if str(config.get("instance_id") or "default") != "default":
-        return False
-    configured_url = str(config.get("url") or "http://127.0.0.1:8787")
-    try:
+        if requested.hostname not in {"localhost", "127.0.0.1", "::1"}:
+            return False
+        config = _read_config()
+        if str(config.get("instance_id") or "default") != "default":
+            return False
+        configured_url = str(config.get("url") or "http://127.0.0.1:8787")
         configured = urlsplit(configured_url)
-    except ValueError:
+        requested_port = requested.port or (443 if requested.scheme == "https" else 80)
+        configured_port = configured.port or int(config.get("port") or 8787)
+        return requested_port == configured_port
+    except (TypeError, ValueError):
         return False
-    requested_port = requested.port or (443 if requested.scheme == "https" else 80)
-    configured_port = configured.port or int(config.get("port") or 8787)
-    return requested_port == configured_port
 
 
 def _healthy(base_url: str, timeout: float = 0.75) -> bool:
@@ -120,12 +117,15 @@ def recover_local_service(base_url: str) -> bool:
     service that owns the configured default instance, then verifies `/healthz`.
     """
 
-    if not _matching_default_instance(base_url):
+    try:
+        if not _matching_default_instance(base_url):
+            return False
+        if _healthy(base_url):
+            return True
+        if sys.platform == "darwin":
+            return _recover_macos(base_url)
+        if os.name == "nt":
+            return _recover_windows(base_url)
+    except Exception:
         return False
-    if _healthy(base_url):
-        return True
-    if sys.platform == "darwin":
-        return _recover_macos(base_url)
-    if os.name == "nt":
-        return _recover_windows(base_url)
     return False
