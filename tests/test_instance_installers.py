@@ -11,6 +11,19 @@ def test_macos_installer_allocates_instead_of_rejecting_port_conflicts():
     assert "from lighthouse.instances import ensure_default_instance" in script
 
 
+def test_macos_installer_recovers_postgres_without_touching_data():
+    script = Path("install-macos.sh").read_text(encoding="utf-8")
+    assert "start_postgres_with_recovery" in script
+    assert "postgres_ready" in script
+    assert "wait_for_postgres" in script
+    assert "brew services cleanup" in script
+    assert 'launchctl bootout "gui/$(id -u)/homebrew.mxcl.postgresql@16"' in script
+    assert '"$PG_BIN/pg_ctl" -D "$PG_DATA" -l "$PG_LOG" start' in script
+    assert "Existing database files were not modified" in script
+    assert 'rm -rf "$PG_DATA"' not in script
+    assert "initdb" not in script
+
+
 def test_windows_bootstrap_stops_the_installed_runtime_before_upgrade():
     script = Path("install-windows.ps1").read_text(encoding="utf-8")
     assert "function Stop-LightHouseRuntime" in script
@@ -18,7 +31,7 @@ def test_windows_bootstrap_stops_the_installed_runtime_before_upgrade():
     assert "Get-CimInstance Win32_Process" in script
     assert "StartsWith($venvRoot" in script
     assert "Stop-LightHouseRuntime" in script.split("-Stage Install")[0]
-    assert "v=1.2.0" in script
+    assert "v=1.2.1" in script
 
 
 def test_windows_core_allocates_and_registers_the_default_instance():
