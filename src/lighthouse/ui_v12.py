@@ -3,12 +3,16 @@ from __future__ import annotations
 from typing import Any
 
 from rich import box
+from rich.console import Group
 from rich.panel import Panel
 from rich.prompt import Prompt
 from rich.table import Table
 from rich.text import Text
 
-from .ui import AMBER, CYAN, GREEN, INK_2, INK_3, INK_4, PAPER, RED, SwissTerminal, _message_text, _short
+from .ui import (
+    AMBER, CYAN, GREEN, INK_2, INK_3, INK_4, PAPER, RED,
+    SwissTerminal, _message_text, _short,
+)
 
 
 _ACTIVE = {"leased", "running", "waiting_dependency", "waiting_confirmation"}
@@ -54,9 +58,8 @@ class ObservatoryTerminal(SwissTerminal):
         observatory = snapshot.get("agent_observatory")
         if not isinstance(observatory, dict):
             return
-        items = observatory.get("items") or []
         changed = []
-        for item in items:
+        for item in observatory.get("items") or []:
             if not isinstance(item, dict):
                 continue
             fingerprint = (
@@ -70,7 +73,8 @@ class ObservatoryTerminal(SwissTerminal):
             return
         self.section(
             "AGENT FIELD",
-            f"{int(observatory.get('active') or 0)} ACTIVE / {int(observatory.get('total') or 0)} TOTAL",
+            f"{int(observatory.get('active') or 0)} ACTIVE / "
+            f"{int(observatory.get('total') or 0)} TOTAL",
         )
         table = Table(
             box=box.MINIMAL,
@@ -83,15 +87,22 @@ class ObservatoryTerminal(SwissTerminal):
         table.add_column("STATE", width=20)
         table.add_column("WORK", ratio=1, overflow="fold")
         for item in changed[-30:]:
-            status = str(item.get("status") or "queued").upper()
-            color = GREEN if str(item.get("status")) in _TERMINAL else AMBER if str(item.get("status")) in _ACTIVE else CYAN
+            raw_status = str(item.get("status") or "queued")
+            status = raw_status.upper()
+            color = GREEN if raw_status in _TERMINAL else AMBER if raw_status in _ACTIVE else CYAN
             progress = float(item.get("progress") or 0)
             state = status + (f" {progress * 100:.0f}%" if progress > 0 else "")
             table.add_row(
-                Text(self._compact_id(str(item.get("agent_id") or item.get("id") or ""), 20), style=INK_2),
+                Text(
+                    self._compact_id(str(item.get("agent_id") or item.get("id") or ""), 20),
+                    style=INK_2,
+                ),
                 Text(str(item.get("role") or "specialist"), style=PAPER),
                 Text(state, style=f"bold {color}"),
-                _message_text(item.get("display_summary") or item.get("goal") or "—", INK_3),
+                _message_text(
+                    item.get("display_summary") or item.get("goal") or "—",
+                    INK_3,
+                ),
             )
         self.console.print(table)
         advice = snapshot.get("coordination_advice")
@@ -113,7 +124,11 @@ class ObservatoryTerminal(SwissTerminal):
         if not isinstance(usage, dict):
             return
         turn = usage.get("turn") if isinstance(usage.get("turn"), dict) else {}
-        conversation = usage.get("conversation") if isinstance(usage.get("conversation"), dict) else {}
+        conversation = (
+            usage.get("conversation")
+            if isinstance(usage.get("conversation"), dict)
+            else {}
+        )
         fingerprint = (
             turn.get("calls"), turn.get("input_tokens"), turn.get("output_tokens"),
             turn.get("total_tokens"), conversation.get("total_tokens"),
@@ -144,10 +159,12 @@ class ObservatoryTerminal(SwissTerminal):
 
     def agents(self, payload: dict[str, Any]) -> None:
         self._agent_fingerprints.clear()
-        self._render_agents({
-            "agent_observatory": payload.get("observatory") or payload,
-            "coordination_advice": payload.get("coordination_advice") or {},
-        })
+        self._render_agents(
+            {
+                "agent_observatory": payload.get("observatory") or payload,
+                "coordination_advice": payload.get("coordination_advice") or {},
+            }
+        )
 
     def tokens(self, payload: dict[str, Any]) -> None:
         self._usage_fingerprint = None
@@ -155,12 +172,17 @@ class ObservatoryTerminal(SwissTerminal):
             self._render_usage({"token_usage": payload})
             return
         self.section("TOKEN USAGE", "MODEL CALL RECEIPTS")
-        table = Table(box=box.MINIMAL, expand=True, padding=(0, 1), header_style=f"bold {INK_4}")
-        table.add_column("CALLS", width=8)
-        table.add_column("INPUT", width=12)
-        table.add_column("OUTPUT", width=12)
-        table.add_column("CACHED", width=12)
-        table.add_column("TOTAL", width=12)
+        table = Table(
+            box=box.MINIMAL,
+            expand=True,
+            padding=(0, 1),
+            header_style=f"bold {INK_4}",
+        )
+        for label, width in (
+            ("CALLS", 8), ("INPUT", 12), ("OUTPUT", 12),
+            ("CACHED", 12), ("TOTAL", 12),
+        ):
+            table.add_column(label, width=width)
         table.add_column("QUALITY", ratio=1)
         table.add_row(
             str(payload.get("calls") or 0),
@@ -178,8 +200,16 @@ class ObservatoryTerminal(SwissTerminal):
         status = str(run.get("status") or "unknown").upper()
         message = str(run.get("final_message") or "Run state persisted.")
         warning = str(run.get("warning") or "").strip()
-        tone = GREEN if status == "SUCCEEDED" else AMBER if status in {"COMPLETED_WITH_WARNING", "PARTIALLY_COMPLETED"} else RED if status == "FAILED" else AMBER
-        body = [
+        tone = (
+            GREEN
+            if status == "SUCCEEDED"
+            else AMBER
+            if status in {"COMPLETED_WITH_WARNING", "PARTIALLY_COMPLETED"}
+            else RED
+            if status == "FAILED"
+            else AMBER
+        )
+        body: list[Any] = [
             _message_text(message),
             Text(""),
             Text(
@@ -195,18 +225,20 @@ class ObservatoryTerminal(SwissTerminal):
         usage = snapshot.get("token_usage") or {}
         turn = usage.get("turn") if isinstance(usage, dict) else {}
         if agents or turn:
-            body.extend([
-                Text(""),
-                Text(
-                    f"AGENTS {int(agents.get('total') or 0)} USED · "
-                    f"{int(agents.get('completed') or 0)} TERMINAL    "
-                    f"TOKENS {self._compact_number((turn or {}).get('total_tokens'))} THIS TURN",
-                    style=INK_2,
-                ),
-            ])
+            body.extend(
+                [
+                    Text(""),
+                    Text(
+                        f"AGENTS {int(agents.get('total') or 0)} USED · "
+                        f"{int(agents.get('completed') or 0)} TERMINAL    "
+                        f"TOKENS {self._compact_number((turn or {}).get('total_tokens'))} THIS TURN",
+                        style=INK_2,
+                    ),
+                ]
+            )
         self.console.print(
             Panel(
-                *body,
+                Group(*body),
                 title=Text(f"{status} / RECEIPT-BACKED", style=f"bold {tone}"),
                 border_style=tone,
                 box=box.SQUARE,
