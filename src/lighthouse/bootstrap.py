@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from importlib.resources import files
+from typing import Any
 
 from .agent_adapter import AgentRepositoryAdapter
 from .agent_bus import PostgresAgentBus
@@ -27,6 +28,17 @@ from .neuron_adaptation import AdaptivePostgresNeuronRuntime
 from .neuron_runtime import NeuronReflexWorker
 from .provider import DisabledProvider, OpenAICompatibleProvider
 from .repository import PostgresRepository
+
+
+class _WorkerGroup:
+    """Expose one lifecycle handle for all invisible intelligence workers."""
+
+    def __init__(self, *workers: Any):
+        self.workers = workers
+
+    def stop(self, timeout: float = 2.0) -> None:
+        for worker in self.workers:
+            worker.stop(timeout=timeout)
 
 
 def migration_sql() -> str:
@@ -133,7 +145,8 @@ def build_brain(settings: Settings, kernel: OperationKernel) -> LightHouseBrain:
     neuron_worker = NeuronReflexWorker(neuron_runtime)
     worker.start()
     neuron_worker.start()
-    brain.background_worker = worker
+    brain.background_worker = _WorkerGroup(worker, neuron_worker)
+    brain.memory_worker = worker
     brain.neuron_runtime = neuron_runtime
     brain.neuron_worker = neuron_worker
     return brain
