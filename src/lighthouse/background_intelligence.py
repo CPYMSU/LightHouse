@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import threading
+import time
 from typing import Any
 from uuid import uuid4
 
@@ -81,7 +82,7 @@ class BackgroundIntelligenceWorker:
                 row = connection.execute(
                     """SELECT EXISTS(
                          SELECT 1 FROM lh_agent_runs
-                         WHERE status IN ('running','awaiting_confirmation','waiting_input')
+                         WHERE status='running'
                            AND updated_at > now()-interval '10 minutes'
                        ) AS busy"""
                 ).fetchone()
