@@ -63,6 +63,7 @@ def _await_run(
     timeout: float = 660.0,
     poll_interval: float = 0.25,
 ) -> dict[str, Any]:
+    """Compatibility helper for callers that do not need streamed observability."""
     deadline = time.monotonic() + timeout
     last: dict[str, Any] | None = None
     while time.monotonic() < deadline:
@@ -91,23 +92,37 @@ def _drive_run(
     auto_mode_available: bool = False,
 ) -> dict[str, Any]:
     seen: set[tuple[Any, ...]] = set()
+    run_deadline = time.monotonic() + 660.0
+    poll_interval = 0.35
+    consecutive_poll_errors = 0
     while True:
         seen = ui.render_run(snapshot, seen=seen)
         run = snapshot.get("run") or {}
         run_id = str(run.get("id") or "")
         status = str(run.get("status") or "")
         if status in {"created", "running"}:
-            with ui.busy("BRAIN / DECIDE FROM CONTEXT SNAPSHOT"):
-                snapshot = _await_run(client, run_id)
-            latest_status = str((snapshot.get("run") or {}).get("status") or "")
-            if latest_status in {"created", "running"}:
+            if time.monotonic() >= run_deadline:
                 ui.notice(
                     "BRAIN CONTINUES",
                     f"Run {run_id} is still active and remains recoverable. "
-                    "Its state is durable even if this terminal closes.",
+                    "Its state, Agent work and Token receipts are durable even if this terminal closes.",
                     tone="amber",
                 )
                 return snapshot
+            try:
+                snapshot = client.request("GET", f"/v1/agent/runs/{run_id}")
+                consecutive_poll_errors = 0
+            except Exception as exc:
+                consecutive_poll_errors += 1
+                if consecutive_poll_errors == 4:
+                    ui.notice(
+                        "CONTROL PLANE RETRY",
+                        f"The Run remains durable while the terminal reconnects: {exc}",
+                        tone="amber",
+                    )
+                time.sleep(min(2.0, poll_interval * (consecutive_poll_errors + 1)))
+                continue
+            time.sleep(poll_interval)
             continue
         if status == "awaiting_confirmation":
             pending = snapshot.get("pending_operation") or {}
