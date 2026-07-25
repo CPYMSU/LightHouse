@@ -78,11 +78,12 @@ CREATE INDEX IF NOT EXISTS idx_lh_mega_projects_context
 CREATE INDEX IF NOT EXISTS idx_lh_mega_projects_run
   ON lh_mega_projects(director_run_id,updated_at DESC);
 
-ALTER TABLE lh_tool_usage
-  DROP CONSTRAINT IF EXISTS lh_tool_usage_project_id_fkey;
-ALTER TABLE lh_tool_usage
-  ADD CONSTRAINT lh_tool_usage_project_id_fkey
-  FOREIGN KEY (project_id) REFERENCES lh_mega_projects(id) ON DELETE SET NULL;
+DO $$ BEGIN
+  ALTER TABLE lh_tool_usage
+    ADD CONSTRAINT lh_tool_usage_project_id_fkey
+    FOREIGN KEY (project_id) REFERENCES lh_mega_projects(id) ON DELETE SET NULL;
+EXCEPTION WHEN duplicate_object THEN NULL;
+END $$;
 
 CREATE TABLE IF NOT EXISTS lh_project_findings (
   id UUID PRIMARY KEY,
