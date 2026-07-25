@@ -5,6 +5,7 @@ from typing import Any
 from ..models import Capability, ExecutionResult, Target
 from .agent_bus import AgentBusExecutor
 from .desktop import DesktopExecutor
+from .mega_project import MegaProjectExecutor
 from .postgres import PostgresExecutor
 from .project_file import ProjectFileExecutor
 from .system import SystemExecutor as PosixSystemExecutor
@@ -37,6 +38,7 @@ class SystemExecutor:
 __all__ = [
     "AgentBusExecutor",
     "DesktopExecutor",
+    "MegaProjectExecutor",
     "PostgresExecutor",
     "ProjectFileExecutor",
     "SystemExecutor",
