@@ -27,6 +27,26 @@ AGENT_BUS_CAPABILITIES: tuple[Capability, ...] = (
         },
     ),
     Capability(
+        tool_name="agent.bus.dispatch_many.v1",
+        command="agent dispatch many",
+        description=(
+            "Create any number of logical specialist Work Orders chosen by the main AI. "
+            "The durable queue controls physical concurrency without imposing a project-size workflow."
+        ),
+        kernel=KernelMode.SYSTEM,
+        executor="agent_bus",
+        operation="dispatch_many",
+        risk=Risk.LOW,
+        confirmation=ConfirmationMode.DIRECT,
+        writes=False,
+        aliases=("dispatch agents", "scale agents", "批量分派 agents", "規模化調查"),
+        arguments={
+            "work_orders": {"type": "array", "required": True},
+            "project_id": {"type": "string", "required": False},
+            "shared_payload": {"type": "object", "required": False},
+        },
+    ),
+    Capability(
         tool_name="agent.bus.status.v1",
         command="agent status",
         description=(
@@ -42,6 +62,21 @@ AGENT_BUS_CAPABILITIES: tuple[Capability, ...] = (
         arguments={
             "work_order_id": {"type": "string", "required": True},
             "wait_seconds": {"type": "number", "required": False},
+        },
+    ),
+    Capability(
+        tool_name="agent.bus.results.v1",
+        command="agent results",
+        description="Read a batch of durable Work Order states and results for synthesis by the main AI.",
+        kernel=KernelMode.SYSTEM,
+        executor="agent_bus",
+        operation="results",
+        risk=Risk.LOW,
+        confirmation=ConfirmationMode.DIRECT,
+        writes=False,
+        aliases=("agent batch results", "匯總 agent 結果", "批量查看 agents"),
+        arguments={
+            "work_order_ids": {"type": "array", "required": True},
         },
     ),
     Capability(
