@@ -1,7 +1,7 @@
 # LightHouse Instance Kernel
 
-LightHouse 0.8.2 can run multiple local API instances at the same time without
-splitting the durable Data or Memory Kernel.
+LightHouse 0.9.0 can run multiple local API instances at the same time without
+splitting the durable Data, Memory or Neuron Kernel.
 
 ## Isolation model
 
@@ -15,10 +15,10 @@ Every instance has its own:
 - process lifecycle record.
 
 All instances reuse the installed LightHouse runtime, native secret store and the
-same PostgreSQL database. Receipts, long-term memory, workspaces and background
-queues therefore remain one coherent system. PostgreSQL work and background jobs
-use transactional claims, including `FOR UPDATE SKIP LOCKED`, so multiple API
-processes do not execute one queued job twice.
+same PostgreSQL database. Receipts, long-term memory, neuron state, workspaces and
+background queues therefore remain one coherent system. PostgreSQL work and
+background jobs use transactional claims, including `FOR UPDATE SKIP LOCKED`, so
+multiple API processes do not execute one queued job twice.
 
 Instance records live under:
 
@@ -67,6 +67,15 @@ lh --instance research doctor
 lh --instance research "continue the current task"
 ```
 
+Auto Mode is stored in each instance configuration but authorizes only one Run at
+a time. Enabling it on an instance does not grant another instance execution
+authority:
+
+```text
+lh --instance research auto on
+lh --instance research "complete the full research workflow"
+```
+
 ## Port allocation
 
 The default preferred port is `8787`. Installation and `lh new` scan upward until
@@ -82,5 +91,6 @@ source of truth for the API server, CLI, health checks and diagnostics.
 - Control and model credentials remain in macOS Keychain or Windows DPAPI.
 - Instance configs contain no model API key.
 - Additional instances cannot expand System or Desktop Target roots.
+- Auto Mode authorization is scoped to one Run and ends at terminal/input state.
 - Stopping one additional instance does not stop PostgreSQL or another instance.
 - Uninstallers stop registered additional processes before removing the runtime.
