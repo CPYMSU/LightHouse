@@ -46,10 +46,52 @@ def test_structured_http_error_is_preserved() -> None:
         client.request("POST", "/v1/targets", {})
 
 
-def test_network_error_names_endpoint_and_exception() -> None:
+def test_network_error_names_endpoint_and_exception(monkeypatch) -> None:
     def fail(request: httpx.Request) -> httpx.Response:
         raise httpx.ConnectError("", request=request)
 
+    monkeypatch.setattr("lighthouse.cli.recover_local_service", lambda _url: False)
     client = _client(fail)
     with pytest.raises(CLIError, match=r"cannot reach LightHouse at http://127\.0\.0\.1:8787"):
         client.request("GET", "/healthz")
+
+
+def test_loopback_connect_error_wakes_service_and_retries(monkeypatch) -> None:
+    calls = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise httpx.ConnectError("connection refused", request=request)
+        return httpx.Response(200, json={"status": "ok"}, request=request)
+
+    recovered: list[str] = []
+    monkeypatch.setattr(
+        "lighthouse.cli.recover_local_service",
+        lambda url: recovered.append(url) is None,
+    )
+    client = _client(handler)
+    assert client.request("GET", "/healthz") == {"status": "ok"}
+    assert recovered == ["http://127.0.0.1:8787"]
+    assert calls == 2
+
+
+def test_read_timeout_does_not_restart_or_retry(monkeypatch) -> None:
+    calls = 0
+
+    def fail(request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        raise httpx.ReadTimeout("still executing", request=request)
+
+    recovered: list[str] = []
+    monkeypatch.setattr(
+        "lighthouse.cli.recover_local_service",
+        lambda url: recovered.append(url) is None,
+    )
+    client = _client(fail)
+    with pytest.raises(CLIError, match="still executing"):
+        client.request("POST", "/v1/operations", {})
+    assert recovered == []
+    assert calls == 1
