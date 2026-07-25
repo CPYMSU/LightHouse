@@ -8,7 +8,6 @@ from .agent_bus import PostgresAgentBus
 from .agent_capabilities import AGENT_BUS_CAPABILITIES
 from .agent_store import PostgresAgentStore
 from .background_intelligence import BackgroundIntelligenceWorker
-from .brain import LightHouseBrain
 from .capabilities import CapabilityRegistry, DEFAULT_CAPABILITIES
 from .config import Settings
 from .data_capabilities import DATA_KERNEL_CAPABILITIES
@@ -24,6 +23,7 @@ from .extra_capabilities import SYSTEM_TYPED_CAPABILITIES
 from .kernel import OperationKernel
 from .memory_search import PostgresMemoryFabric
 from .neuron_adaptation import AdaptivePostgresNeuronRuntime
+from .neuron_brain import NeuronAwareLightHouseBrain
 from .neuron_context import NeuronAwareContextCompiler
 from .neuron_runtime import NeuronReflexWorker
 from .provider import DisabledProvider, OpenAICompatibleProvider
@@ -103,7 +103,7 @@ def build_kernel(settings: Settings, *, migrate: bool = True) -> OperationKernel
     return kernel
 
 
-def build_brain(settings: Settings, kernel: OperationKernel) -> LightHouseBrain:
+def build_brain(settings: Settings, kernel: OperationKernel) -> NeuronAwareLightHouseBrain:
     if settings.model and settings.model_base_url and settings.model_api_key:
         provider = OpenAICompatibleProvider(
             base_url=settings.model_base_url,
@@ -131,7 +131,7 @@ def build_brain(settings: Settings, kernel: OperationKernel) -> LightHouseBrain:
         getattr(kernel, "context_compiler", None)
         or NeuronAwareContextCompiler(memory, agent_bus, neuron_runtime)
     )
-    brain = LightHouseBrain(
+    brain = NeuronAwareLightHouseBrain(
         state_repository,
         kernel,
         provider,
