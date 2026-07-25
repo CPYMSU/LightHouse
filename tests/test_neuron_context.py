@@ -24,7 +24,7 @@ class FakeNeuronRuntime:
         }
 
 
-def test_live_neuron_field_is_injected_after_simple_reflexes(monkeypatch):
+def test_neuron_field_is_read_without_foreground_processing(monkeypatch):
     monkeypatch.setattr(
         ContextCompiler,
         "compile",
@@ -45,11 +45,12 @@ def test_live_neuron_field_is_injected_after_simple_reflexes(monkeypatch):
         query="continue",
     )
 
-    assert runtime.processed == 4
+    assert runtime.processed == 0
     assert runtime.workspace_id == "workspace-1"
     assert bundle["neuron_field"]["available"] is True
     assert bundle["neuron_field"]["dominant_neurons"][0]["neuron_id"] == 2
-    assert bundle["snapshot"]["neuron_source"] == "live"
+    assert bundle["neuron_field"]["freshness"] == "latest_completed_background_snapshot"
+    assert bundle["snapshot"]["neuron_source"] == "background_snapshot"
 
 
 def test_main_ai_prompt_treats_neuron_field_as_reflex_evidence(monkeypatch):
