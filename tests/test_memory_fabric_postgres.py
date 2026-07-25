@@ -127,7 +127,7 @@ def test_messages_tasks_locators_and_files_survive_without_keyword_inheritance(t
         workspace_id=workspace.id,
         actor="adsin",
         conversation_id=same["id"],
-        query="上一個網頁",
+        query="index.html",
     )
     assert context["active_task"]["subject"] is None
     assert context["conversation"]["active_subject_value"] == str(html.resolve())
