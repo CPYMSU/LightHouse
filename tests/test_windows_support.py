@@ -140,6 +140,28 @@ def test_windows_installer_is_strictmode_safe_bootstrap():
     script = Path("install-windows.ps1").read_text(encoding="utf-8")
     assert "$MyInvocation.MyCommand.Path" not in script
     assert "$CoreCommit = 'f2ae0df9d69144218bcc68cb6538cae1755923fe'" in script
+    assert "install-windows-database.ps1" in script
+    assert "-Stage Prepare" in script
+    assert "-Stage Finalize" in script
     assert "LIGHTHOUSE_BOOTSTRAP_VALIDATE" in script
     assert "LIGHTHOUSE_INSTALL_FROM_FILE" in script
     assert "powershell.exe" in script
+
+
+def test_windows_private_database_bootstrap_never_requests_postgres_password():
+    script = Path("install-windows-database.ps1").read_text(encoding="utf-8")
+    assert "Existing PostgreSQL postgres-user password" not in script
+    assert "Read-Host" not in script
+    assert "initdb.exe" in script
+    assert "pg_ctl.exe" in script
+    assert "database_managed" in script
+    assert "postgres_data_dir" in script
+    assert "Private LightHouse Database Kernel" in script
+    assert "$DefaultPrivatePort = 55432" in script
+
+
+def test_windows_uninstaller_only_stops_managed_database():
+    script = Path("uninstall-windows.ps1").read_text(encoding="utf-8")
+    assert "database_managed" in script
+    assert "pg_ctl.exe" in script
+    assert "External PostgreSQL installations and databases were left untouched" in script
