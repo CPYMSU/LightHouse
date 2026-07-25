@@ -4,7 +4,6 @@ from importlib.resources import files
 from typing import Any
 
 from .agent_adapter import AgentRepositoryAdapter
-from .agent_bus import PostgresAgentBus
 from .agent_capabilities import AGENT_BUS_CAPABILITIES
 from .agent_store import PostgresAgentStore
 from .background_intelligence import BackgroundIntelligenceWorker
@@ -15,22 +14,29 @@ from .data_kernel import DataTargetResolver, PostgresDataCatalog
 from .executors import (
     DesktopExecutor,
     ElasticAgentBusExecutor,
+    MassiveBuildExecutor,
     MegaProjectExecutor,
     PostgresExecutor,
     ProjectFileExecutor,
+    ResearchExecutor,
     SystemExecutor,
 )
 from .extra_capabilities import SYSTEM_TYPED_CAPABILITIES
 from .kernel import OperationKernel
+from .massive_build import PostgresMassiveBuildStore
+from .massive_build_capabilities import MASSIVE_BUILD_CAPABILITIES
 from .mega_brain import MegaProjectLightHouseBrain
 from .mega_context import MegaProjectContextCompiler
 from .mega_project_capabilities import MEGA_PROJECT_CAPABILITIES
 from .mega_projects import PostgresMegaProjectStore
 from .memory_search import PostgresMemoryFabric
+from .model_usage import PostgresModelUsageStore
 from .neuron_adaptation import AdaptivePostgresNeuronRuntime
 from .neuron_runtime import NeuronReflexWorker
+from .observable_agent_bus import ObservablePostgresAgentBus
 from .provider import DisabledProvider, OpenAICompatibleProvider
 from .repository import PostgresRepository
+from .research_capabilities import RESEARCH_CAPABILITIES
 from .tool_registry import PostgresToolRegistry
 
 
@@ -56,6 +62,7 @@ def migration_sql() -> str:
             "0004_emergent_neurons.sql",
             "0005_neuron_trigger_hardening.sql",
             "0006_tool_registry_mega_projects.sql",
+            "0007_agent_observatory_massive_build.sql",
         )
     )
 
@@ -66,10 +73,12 @@ def build_kernel(settings: Settings, *, migrate: bool = True) -> OperationKernel
         repository.migrate(migration_sql())
     catalog = PostgresDataCatalog(settings.database_url)
     memory = PostgresMemoryFabric(settings.database_url)
-    agent_bus = PostgresAgentBus(settings.database_url)
+    agent_bus = ObservablePostgresAgentBus(settings.database_url)
     neuron_runtime = AdaptivePostgresNeuronRuntime(settings.database_url)
     tool_registry = PostgresToolRegistry(settings.database_url)
     project_store = PostgresMegaProjectStore(settings.database_url)
+    massive_build = PostgresMassiveBuildStore(settings.database_url)
+    usage_store = PostgresModelUsageStore(settings.database_url)
     agent_bus.register_builtin_agents()
     memory.bind_agent_bus(agent_bus)
     context_compiler = MegaProjectContextCompiler(
@@ -78,6 +87,7 @@ def build_kernel(settings: Settings, *, migrate: bool = True) -> OperationKernel
         neuron_runtime,
         tool_registry,
         project_store,
+        massive_build,
     )
     registry = CapabilityRegistry(
         (
@@ -86,6 +96,8 @@ def build_kernel(settings: Settings, *, migrate: bool = True) -> OperationKernel
             *DATA_KERNEL_CAPABILITIES,
             *AGENT_BUS_CAPABILITIES,
             *MEGA_PROJECT_CAPABILITIES,
+            *MASSIVE_BUILD_CAPABILITIES,
+            *RESEARCH_CAPABILITIES,
         )
     )
     tool_registry.sync_capabilities(registry.list())
@@ -99,6 +111,7 @@ def build_kernel(settings: Settings, *, migrate: bool = True) -> OperationKernel
         tool_registry=tool_registry,
         project_store=project_store,
     )
+    massive_build_executor = MassiveBuildExecutor(store=massive_build)
     kernel = OperationKernel(
         repository,
         registry,
@@ -109,6 +122,8 @@ def build_kernel(settings: Settings, *, migrate: bool = True) -> OperationKernel
             "desktop": DesktopExecutor(),
             "agent_bus": agent_bus_executor,
             "mega_project": mega_project_executor,
+            "massive_build": massive_build_executor,
+            "research": ResearchExecutor(),
         },
         target_resolver=DataTargetResolver(catalog),
         data_catalog=catalog,
@@ -119,10 +134,16 @@ def build_kernel(settings: Settings, *, migrate: bool = True) -> OperationKernel
     kernel.neuron_runtime = neuron_runtime
     kernel.tool_registry = tool_registry
     kernel.mega_projects = project_store
+    kernel.massive_build = massive_build
+    kernel.usage_store = usage_store
     return kernel
 
 
 def build_brain(settings: Settings, kernel: OperationKernel) -> MegaProjectLightHouseBrain:
+    usage_store = (
+        getattr(kernel, "usage_store", None)
+        or PostgresModelUsageStore(settings.database_url)
+    )
     if settings.model and settings.model_base_url and settings.model_api_key:
         provider = OpenAICompatibleProvider(
             base_url=settings.model_base_url,
@@ -131,6 +152,8 @@ def build_brain(settings: Settings, kernel: OperationKernel) -> MegaProjectLight
             timeout=settings.model_timeout,
             json_mode=settings.model_json_mode,
             max_state_chars=settings.model_max_state_chars,
+            usage_recorder=usage_store.record,
+            transport_retries=1,
         )
     else:
         provider = DisabledProvider()
@@ -139,7 +162,10 @@ def build_brain(settings: Settings, kernel: OperationKernel) -> MegaProjectLight
         kernel.repository,
     )
     memory = getattr(kernel, "memory", None) or PostgresMemoryFabric(settings.database_url)
-    agent_bus = getattr(kernel, "agent_bus", None) or PostgresAgentBus(settings.database_url)
+    agent_bus = (
+        getattr(kernel, "agent_bus", None)
+        or ObservablePostgresAgentBus(settings.database_url)
+    )
     neuron_runtime = (
         getattr(kernel, "neuron_runtime", None)
         or AdaptivePostgresNeuronRuntime(settings.database_url)
@@ -152,6 +178,10 @@ def build_brain(settings: Settings, kernel: OperationKernel) -> MegaProjectLight
         getattr(kernel, "mega_projects", None)
         or PostgresMegaProjectStore(settings.database_url)
     )
+    massive_build = (
+        getattr(kernel, "massive_build", None)
+        or PostgresMassiveBuildStore(settings.database_url)
+    )
     agent_bus.register_builtin_agents()
     memory.bind_agent_bus(agent_bus)
     context_compiler = (
@@ -162,6 +192,7 @@ def build_brain(settings: Settings, kernel: OperationKernel) -> MegaProjectLight
             neuron_runtime,
             tool_registry,
             project_store,
+            massive_build,
         )
     )
     brain = MegaProjectLightHouseBrain(
@@ -172,12 +203,19 @@ def build_brain(settings: Settings, kernel: OperationKernel) -> MegaProjectLight
         agent_bus=agent_bus,
         context_compiler=context_compiler,
     )
+    brain.usage_store = usage_store
+    brain.mega_projects = project_store
+    brain.massive_build = massive_build
     worker = BackgroundIntelligenceWorker(
         agent_bus=agent_bus,
         memory=memory,
         context_compiler=context_compiler,
         provider=provider,
         repository=kernel.repository,
+        kernel=kernel,
+        run_repository=state_repository,
+        project_store=project_store,
+        massive_build=massive_build,
     )
     neuron_worker = NeuronReflexWorker(neuron_runtime)
     worker.start()
@@ -187,7 +225,6 @@ def build_brain(settings: Settings, kernel: OperationKernel) -> MegaProjectLight
     brain.neuron_runtime = neuron_runtime
     brain.neuron_worker = neuron_worker
     brain.tool_registry = tool_registry
-    brain.mega_projects = project_store
     return brain
 
 
