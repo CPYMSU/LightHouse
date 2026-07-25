@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from lighthouse.neuron_adaptation import encode_database_event
 from lighthouse.neuron_model import (
     DEFAULT_ARCHETYPES,
     DIMENSION_INDEX,
@@ -111,3 +112,21 @@ def test_failure_stimulus_projects_animal_like_fear_and_aversion():
     assert result.emotions["fear"] > 0.5
     assert result.emotions["aversion"] > 0.3
     assert result.emotions["joy"] == 0
+
+
+def test_nested_receipt_result_becomes_reward_or_loss_stimulus():
+    failed = encode_database_event(
+        event_type="lh_operation_receipts.insert",
+        operation="insert",
+        payload={"after": {"ok": False}},
+    )
+    succeeded = encode_database_event(
+        event_type="lh_operation_receipts.insert",
+        operation="insert",
+        payload={"after": {"ok": True}},
+    )
+
+    assert failed.get("loss_delta") > 0.5
+    assert failed.get("threat") > 0.5
+    assert succeeded.get("reward_delta") > 0.5
+    assert succeeded.get("positive_valence") > 0.5
