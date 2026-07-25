@@ -166,8 +166,12 @@ def test_windows_service_installer_owns_health_and_diagnostics():
     assert "Wait-ApiHealth 45" in script
     assert "startup-error.log" in script
     assert "startup-direct-error.log" in script
+    assert "server-error.log" in script
     assert "Get-ScheduledTaskInfo" in script
     assert "Start-Process" in script
+    assert "RedirectStandardOutput" in script
+    assert "RedirectStandardError" in script
+    assert "& '$escapedPython' -m lighthouse.server *>>" not in script
     assert "migrate" in script
     assert "doctor" in script
 

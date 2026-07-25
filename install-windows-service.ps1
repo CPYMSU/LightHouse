@@ -75,7 +75,13 @@ function Show-StartupDiagnostics([string]$InstallRoot) {
         if ($info) { Write-Host "Scheduled Task last result: $($info.LastTaskResult)" -ForegroundColor Yellow }
     }
     catch { }
-    foreach ($name in @('startup-error.log', 'startup-direct-error.log', 'server.log', 'postgres.log')) {
+    foreach ($name in @(
+        'startup-error.log',
+        'startup-direct-error.log',
+        'server.log',
+        'server-error.log',
+        'postgres.log'
+    )) {
         $path = Join-Path $logDir $name
         if (Test-Path -LiteralPath $path -PathType Leaf) {
             Write-Host "--- $name ---" -ForegroundColor Yellow
@@ -105,6 +111,7 @@ $LhExe = Join-Path $InstallRoot 'venv\Scripts\lh.exe'
 $LogDir = Join-Path $InstallRoot 'logs'
 $ServerScript = Join-Path $InstallRoot 'start-server.ps1'
 $ServerLog = Join-Path $LogDir 'server.log'
+$ServerErrorLog = Join-Path $LogDir 'server-error.log'
 $StartupLog = Join-Path $LogDir 'startup-error.log'
 $DirectError = Join-Path $LogDir 'startup-direct-error.log'
 New-Item -ItemType Directory -Force -Path $LogDir | Out-Null
@@ -117,6 +124,7 @@ $escapedApp = $AppDir.Replace("'", "''")
 $escapedPython = $VenvPython.Replace("'", "''")
 $escapedConfig = $ConfigFile.Replace("'", "''")
 $escapedServerLog = $ServerLog.Replace("'", "''")
+$escapedServerErrorLog = $ServerErrorLog.Replace("'", "''")
 $escapedStartupLog = $StartupLog.Replace("'", "''")
 
 $databasePrelude = ''
@@ -141,6 +149,11 @@ if ($ManagedDatabase) {
 "@
 }
 
+# Windows PowerShell 5.1 converts native stderr into NativeCommandError records.
+# Uvicorn writes ordinary INFO lifecycle messages to stderr, so invoking Python
+# with `& ... *>>` under ErrorActionPreference=Stop incorrectly kills a healthy
+# server. Start-Process keeps stdout/stderr as byte streams and lets the wrapper
+# judge the real child exit code instead.
 $serverContent = @"
 `$ErrorActionPreference = 'Stop'
 `$env:PYTHONUTF8 = '1'
@@ -150,8 +163,13 @@ try {
 $databasePrelude
     Set-Location -LiteralPath '$escapedApp'
     "`$(Get-Date -Format o) STARTING API" | Add-Content -LiteralPath '$escapedStartupLog' -Encoding UTF8
-    & '$escapedPython' -m lighthouse.server *>> '$escapedServerLog'
-    `$exitCode = `$LASTEXITCODE
+    `$apiProcess = Start-Process -FilePath '$escapedPython' `
+        -ArgumentList @('-m', 'lighthouse.server') `
+        -WorkingDirectory '$escapedApp' `
+        -NoNewWindow -PassThru -Wait `
+        -RedirectStandardOutput '$escapedServerLog' `
+        -RedirectStandardError '$escapedServerErrorLog'
+    `$exitCode = `$apiProcess.ExitCode
     "`$(Get-Date -Format o) API EXIT `$exitCode" | Add-Content -LiteralPath '$escapedStartupLog' -Encoding UTF8
     exit `$exitCode
 }
@@ -175,6 +193,8 @@ $Settings = New-ScheduledTaskSettingsSet `
     -RestartCount 3 -RestartInterval (New-TimeSpan -Minutes 1)
 
 try { Stop-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue } catch { }
+Remove-Item -LiteralPath $StartupLog, $DirectError, $ServerLog, $ServerErrorLog `
+    -Force -ErrorAction SilentlyContinue
 Register-ScheduledTask -TaskName $TaskName -Action $Action -Trigger $Trigger `
     -Principal $Principal -Settings $Settings -Force | Out-Null
 Start-ScheduledTask -TaskName $TaskName
