@@ -13,21 +13,25 @@ from .config import Settings
 from .data_capabilities import DATA_KERNEL_CAPABILITIES
 from .data_kernel import DataTargetResolver, PostgresDataCatalog
 from .executors import (
-    AgentBusExecutor,
     DesktopExecutor,
+    ElasticAgentBusExecutor,
+    MegaProjectExecutor,
     PostgresExecutor,
     ProjectFileExecutor,
     SystemExecutor,
 )
 from .extra_capabilities import SYSTEM_TYPED_CAPABILITIES
 from .kernel import OperationKernel
+from .mega_brain import MegaProjectLightHouseBrain
+from .mega_context import MegaProjectContextCompiler
+from .mega_project_capabilities import MEGA_PROJECT_CAPABILITIES
+from .mega_projects import PostgresMegaProjectStore
 from .memory_search import PostgresMemoryFabric
 from .neuron_adaptation import AdaptivePostgresNeuronRuntime
-from .neuron_brain import NeuronAwareLightHouseBrain
-from .neuron_context import NeuronAwareContextCompiler
 from .neuron_runtime import NeuronReflexWorker
 from .provider import DisabledProvider, OpenAICompatibleProvider
 from .repository import PostgresRepository
+from .tool_registry import PostgresToolRegistry
 
 
 class _WorkerGroup:
@@ -51,6 +55,7 @@ def migration_sql() -> str:
             "0003_context_intelligence.sql",
             "0004_emergent_neurons.sql",
             "0005_neuron_trigger_hardening.sql",
+            "0006_tool_registry_mega_projects.sql",
         )
     )
 
@@ -63,12 +68,16 @@ def build_kernel(settings: Settings, *, migrate: bool = True) -> OperationKernel
     memory = PostgresMemoryFabric(settings.database_url)
     agent_bus = PostgresAgentBus(settings.database_url)
     neuron_runtime = AdaptivePostgresNeuronRuntime(settings.database_url)
+    tool_registry = PostgresToolRegistry(settings.database_url)
+    project_store = PostgresMegaProjectStore(settings.database_url)
     agent_bus.register_builtin_agents()
     memory.bind_agent_bus(agent_bus)
-    context_compiler = NeuronAwareContextCompiler(
+    context_compiler = MegaProjectContextCompiler(
         memory,
         agent_bus,
         neuron_runtime,
+        tool_registry,
+        project_store,
     )
     registry = CapabilityRegistry(
         (
@@ -76,13 +85,19 @@ def build_kernel(settings: Settings, *, migrate: bool = True) -> OperationKernel
             *SYSTEM_TYPED_CAPABILITIES,
             *DATA_KERNEL_CAPABILITIES,
             *AGENT_BUS_CAPABILITIES,
+            *MEGA_PROJECT_CAPABILITIES,
         )
     )
-    agent_bus_executor = AgentBusExecutor(
+    tool_registry.sync_capabilities(registry.list())
+    agent_bus_executor = ElasticAgentBusExecutor(
         agent_bus=agent_bus,
         context_compiler=context_compiler,
         repository=repository,
         registry=registry,
+    )
+    mega_project_executor = MegaProjectExecutor(
+        tool_registry=tool_registry,
+        project_store=project_store,
     )
     kernel = OperationKernel(
         repository,
@@ -93,6 +108,7 @@ def build_kernel(settings: Settings, *, migrate: bool = True) -> OperationKernel
             "project_file": ProjectFileExecutor(),
             "desktop": DesktopExecutor(),
             "agent_bus": agent_bus_executor,
+            "mega_project": mega_project_executor,
         },
         target_resolver=DataTargetResolver(catalog),
         data_catalog=catalog,
@@ -101,10 +117,12 @@ def build_kernel(settings: Settings, *, migrate: bool = True) -> OperationKernel
     kernel.agent_bus = agent_bus
     kernel.context_compiler = context_compiler
     kernel.neuron_runtime = neuron_runtime
+    kernel.tool_registry = tool_registry
+    kernel.mega_projects = project_store
     return kernel
 
 
-def build_brain(settings: Settings, kernel: OperationKernel) -> NeuronAwareLightHouseBrain:
+def build_brain(settings: Settings, kernel: OperationKernel) -> MegaProjectLightHouseBrain:
     if settings.model and settings.model_base_url and settings.model_api_key:
         provider = OpenAICompatibleProvider(
             base_url=settings.model_base_url,
@@ -126,13 +144,27 @@ def build_brain(settings: Settings, kernel: OperationKernel) -> NeuronAwareLight
         getattr(kernel, "neuron_runtime", None)
         or AdaptivePostgresNeuronRuntime(settings.database_url)
     )
+    tool_registry = (
+        getattr(kernel, "tool_registry", None)
+        or PostgresToolRegistry(settings.database_url)
+    )
+    project_store = (
+        getattr(kernel, "mega_projects", None)
+        or PostgresMegaProjectStore(settings.database_url)
+    )
     agent_bus.register_builtin_agents()
     memory.bind_agent_bus(agent_bus)
     context_compiler = (
         getattr(kernel, "context_compiler", None)
-        or NeuronAwareContextCompiler(memory, agent_bus, neuron_runtime)
+        or MegaProjectContextCompiler(
+            memory,
+            agent_bus,
+            neuron_runtime,
+            tool_registry,
+            project_store,
+        )
     )
-    brain = NeuronAwareLightHouseBrain(
+    brain = MegaProjectLightHouseBrain(
         state_repository,
         kernel,
         provider,
@@ -154,6 +186,8 @@ def build_brain(settings: Settings, kernel: OperationKernel) -> NeuronAwareLight
     brain.memory_worker = worker
     brain.neuron_runtime = neuron_runtime
     brain.neuron_worker = neuron_worker
+    brain.tool_registry = tool_registry
+    brain.mega_projects = project_store
     return brain
 
 
