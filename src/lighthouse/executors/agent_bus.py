@@ -37,20 +37,37 @@ class AgentBusExecutor:
             work_order_id = str(arguments.get("work_order_id") or "").strip()
             if not work_order_id:
                 raise ValueError("work_order_id is required")
+            payload = (
+                arguments.get("payload")
+                if isinstance(arguments.get("payload"), dict)
+                else {}
+            )
             value = self.agent_bus.cancel(
                 work_order_id,
-                requested_by=str(arguments.get("__actor") or "main-ai"),
+                requested_by=str(
+                    arguments.get("__actor")
+                    or payload.get("actor")
+                    or "main-ai"
+                ),
             )
             return ExecutionResult(ok=True, result={"work_order": value})
         raise ValueError(f"unsupported Agent Bus operation: {operation}")
 
     def _dispatch(self, target: Target, arguments: dict[str, Any]) -> ExecutionResult:
         workspace_id = str(arguments.get("__workspace_id") or "")
-        actor = str(arguments.get("__actor") or "main-ai")
         parent_run_id = str(arguments.get("parent_run_id") or "") or None
         role = str(arguments.get("role") or "").strip()
         goal = str(arguments.get("goal") or "").strip()
-        payload = arguments.get("payload") if isinstance(arguments.get("payload"), dict) else {}
+        payload = (
+            arguments.get("payload")
+            if isinstance(arguments.get("payload"), dict)
+            else {}
+        )
+        actor = str(
+            arguments.get("__actor")
+            or payload.get("actor")
+            or "main-ai"
+        )
         visibility = str(arguments.get("visibility") or "foreground")
         work = self.agent_bus.dispatch(
             workspace_id=workspace_id,
@@ -111,13 +128,7 @@ class AgentBusExecutor:
         ]
         proposed = Path(raw).expanduser()
         candidate = proposed.resolve() if proposed.is_absolute() else (default_cwd / proposed).resolve()
-        inside = any(candidate == root or root in candidate.parents for root in roots)
-        exists = candidate.exists()
-        return {
-            "verified_facts": {
-                "proposed_path": raw,
-                "canonical_path": str(candidate),
-                "exists": exists,
+        inside = any(candidate == root or exists,
                 "inside_allowed_roots": inside,
                 "is_file": candidate.is_file() if exists else False,
                 "is_directory": candidate.is_dir() if exists else False,
