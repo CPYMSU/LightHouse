@@ -23,7 +23,10 @@ class SequenceProvider:
 
     def decide(self, *, system_prompt, state):
         self.states.append((system_prompt, state))
-        return self.decisions.pop(0)
+        value = self.decisions.pop(0)
+        if isinstance(value, Exception):
+            raise value
+        return value
 
 
 class FakeExecutor:
@@ -130,9 +133,7 @@ def test_agent_pauses_for_confirmation_and_resumes():
     )
     assert pending["run"]["status"] == AgentRunStatus.AWAITING_CONFIRMATION.value
     operation_id = pending["run"]["pending_operation_id"]
-    assert pending["pending_operation"]["operation"]["status"] == (
-        OperationStatus.AWAITING_CONFIRMATION.value
-    )
+    assert pending["pending_operation"]["operation"]["status"] == OperationStatus.AWAITING_CONFIRMATION.value
     assert "system.shell.exec.v1" not in [name for name, _args in executor.calls]
 
     kernel.confirm(operation_id, actor="adsin")
@@ -141,27 +142,62 @@ def test_agent_pauses_for_confirmation_and_resumes():
     assert "system.shell.exec.v1" in [name for name, _args in executor.calls]
 
 
-def test_agent_yes_auto_confirms_explicit_but_not_passkey():
-    agent, _kernel, _repository, workspace, executor, _provider = runtime(
+def test_auto_is_granted_at_first_permission_and_reused_for_compatible_operation():
+    agent, kernel, _repository, workspace, executor, _provider = runtime(
         [
             AgentDecision(
                 kind="tool",
                 capability="system.test.run.v1",
-                arguments={"command": "pytest -q"},
-                reason="verify",
+                arguments={"command": "pytest -q tests/one"},
+                reason="verify first batch",
             ),
-            AgentDecision(kind="final", message="Tests passed.", reason="receipt"),
+            AgentDecision(
+                kind="tool",
+                capability="system.test.run.v1",
+                arguments={"command": "pytest -q tests/two"},
+                reason="verify second batch",
+            ),
+            AgentDecision(kind="final", message="Tests passed.", reason="receipts"),
         ]
     )
-    done = agent.start(
+    pending = agent.start(
         task="Run tests",
         workspace_id=workspace.id,
         actor="adsin",
-        auto_confirm=True,
+        auto_confirm=False,
     )
+    assert pending["run"]["status"] == AgentRunStatus.AWAITING_CONFIRMATION.value
+    scoped = agent.authorize_auto(pending["run"]["id"], actor="adsin")
+    assert scoped["run"]["auto_confirm"] is True
+    assert scoped["run"]["auto_scope"]["allowed_capabilities"] == ["system.test.run.v1"]
+    kernel.confirm(pending["run"]["pending_operation_id"], actor="adsin")
+    done = agent.advance(pending["run"]["id"])
     assert done["run"]["status"] == AgentRunStatus.SUCCEEDED.value
-    assert "system.test.run.v1" in [name for name, _args in executor.calls]
+    assert [name for name, _args in executor.calls].count("system.test.run.v1") == 2
     assert any(step["kind"] == "auto_confirmation" for step in done["steps"])
+
+
+def test_provider_failure_after_successful_receipt_becomes_warning_not_failure():
+    agent, _kernel, _repository, workspace, _executor, _provider = runtime(
+        [
+            AgentDecision(
+                kind="tool",
+                capability="system.git.status.v1",
+                arguments={},
+                reason="inspect",
+            ),
+            ConnectionError("Server disconnected without sending a response."),
+        ]
+    )
+    result = agent.start(
+        task="Inspect then explain",
+        workspace_id=workspace.id,
+        actor="adsin",
+    )
+    assert result["run"]["status"] == AgentRunStatus.COMPLETED_WITH_WARNING.value
+    assert result["run"]["execution_status"] == "succeeded"
+    assert result["run"]["response_status"] == "provider_failed"
+    assert "successful Receipt remains authoritative" in result["run"]["final_message"]
 
 
 def test_agent_can_request_and_receive_user_input():

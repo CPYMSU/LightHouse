@@ -16,7 +16,7 @@ from .models import (
 
 
 class LightHouseBrain(AgentRuntime):
-    """Main AI with durable context intelligence and optional Agent Bus delegation."""
+    """Main AI with durable Context Intelligence and freely chosen Agent collaboration."""
 
     def __init__(
         self,
@@ -31,15 +31,16 @@ class LightHouseBrain(AgentRuntime):
         self.memory = memory
         self.agent_bus = agent_bus
         self.context_compiler = context_compiler
-        self.memory_bridge = (
-            MemoryRuntimeBridge(memory, kernel) if memory is not None else None
-        )
+        self.memory_bridge = MemoryRuntimeBridge(memory, kernel) if memory is not None else None
         self.address_resolver = (
             ExecutionAddressResolver(memory, kernel.repository, kernel.target_resolver)
             if memory is not None
             else None
         )
         self.background_worker = None
+        self.usage_store = None
+        self.mega_projects = None
+        self.massive_build = None
 
     def start(
         self,
@@ -119,6 +120,12 @@ class LightHouseBrain(AgentRuntime):
             )
         return self.advance(run.id)
 
+    def authorize_auto(self, run_id: str, *, actor: str) -> dict[str, Any]:
+        snapshot = super().authorize_auto(run_id, actor=actor)
+        if self.memory_bridge is not None:
+            self.memory_bridge.sync(run_id, snapshot)
+        return snapshot
+
     def provide_input(self, run_id: str, *, actor: str, message: str) -> dict[str, Any]:
         snapshot = super().provide_input(run_id, actor=actor, message=message)
         if self.memory_bridge is not None:
@@ -133,21 +140,53 @@ class LightHouseBrain(AgentRuntime):
 
     def snapshot(self, run_id: str) -> dict[str, Any]:
         snapshot = super().snapshot(run_id)
+        conversation = None
         if self.memory is not None:
             try:
-                snapshot["conversation"] = self.memory.conversation_for_run(run_id)
+                conversation = self.memory.conversation_for_run(run_id)
+                snapshot["conversation"] = conversation
             except Exception:
                 snapshot["conversation"] = None
+        run = self.repository.get_agent_run(run_id)
+        work_orders: list[dict[str, Any]] = []
         if self.agent_bus is not None:
             try:
-                run = self.repository.get_agent_run(run_id)
-                snapshot["work_orders"] = self.agent_bus.list_work_orders(
+                work_orders = self.agent_bus.list_work_orders(
                     workspace_id=run.workspace_id,
                     parent_run_id=run_id,
-                    limit=20,
+                    limit=100,
                 )
             except Exception:
-                snapshot["work_orders"] = []
+                work_orders = []
+        snapshot["work_orders"] = work_orders
+        terminal = {"succeeded", "failed", "cancelled", "superseded"}
+        active = {"leased", "running", "waiting_dependency", "waiting_confirmation"}
+        snapshot["agent_observatory"] = {
+            "total": len(work_orders),
+            "active": sum(1 for item in work_orders if item.get("status") in active),
+            "queued": sum(1 for item in work_orders if item.get("status") == "queued"),
+            "completed": sum(1 for item in work_orders if item.get("status") in terminal),
+            "items": work_orders,
+        }
+        if self.agent_bus is not None and hasattr(self.agent_bus, "coordination_advice"):
+            try:
+                snapshot["coordination_advice"] = self.agent_bus.coordination_advice(
+                    workspace_id=run.workspace_id,
+                    parent_run_id=run_id,
+                )
+            except Exception:
+                snapshot["coordination_advice"] = {
+                    "recommended_strategy": "main_ai_decides",
+                    "advisory_only": True,
+                }
+        if self.usage_store is not None:
+            try:
+                snapshot["token_usage"] = self.usage_store.run_and_conversation_summary(
+                    run_id=run_id,
+                    conversation_id=(conversation or {}).get("id") if conversation else None,
+                )
+            except Exception:
+                snapshot["token_usage"] = {"turn": {"total_tokens": 0}, "conversation": {"total_tokens": 0}}
         return snapshot
 
     def _dispatch_tool(
@@ -164,11 +203,7 @@ class LightHouseBrain(AgentRuntime):
             self.repository.append_agent_step(
                 run.id,
                 "tool_rejected",
-                {
-                    "step": step_number,
-                    "capability": decision.capability,
-                    "error": str(exc),
-                },
+                {"step": step_number, "capability": decision.capability, "error": str(exc)},
             )
             return None
         if run.mode not in {KernelMode.AUTO, capability.kernel}:
@@ -178,10 +213,7 @@ class LightHouseBrain(AgentRuntime):
                 {
                     "step": step_number,
                     "capability": capability.tool_name,
-                    "error": (
-                        f"run mode {run.mode.value} cannot call "
-                        f"{capability.kernel.value}"
-                    ),
+                    "error": f"run mode {run.mode.value} cannot call {capability.kernel.value}",
                 },
             )
             return None
@@ -189,6 +221,7 @@ class LightHouseBrain(AgentRuntime):
             grounded_arguments = dict(decision.arguments)
             if capability.executor == "agent_bus":
                 grounded_arguments.setdefault("parent_run_id", run.id)
+                grounded_arguments.setdefault("actor", run.actor)
                 payload = (
                     dict(grounded_arguments.get("payload") or {})
                     if isinstance(grounded_arguments.get("payload"), dict)
@@ -216,8 +249,8 @@ class LightHouseBrain(AgentRuntime):
                     "error": str(exc),
                     "error_type": type(exc).__name__,
                     "instruction": (
-                        "Use the Context Intelligence facts or dispatch a Reality Agent, "
-                        "then submit a real address. The validator will not silently replace it."
+                        "Use Context Intelligence facts or dispatch a Reality Agent, then "
+                        "submit a real address. The validator will not silently replace it."
                     ),
                 },
             )
@@ -235,12 +268,7 @@ class LightHouseBrain(AgentRuntime):
             )
         idempotency_key = (
             f"agent:{run.id}:{step_number}:"
-            + digest_json(
-                {
-                    "capability": capability.tool_name,
-                    "arguments": grounded_arguments,
-                }
-            )
+            + digest_json({"capability": capability.tool_name, "arguments": grounded_arguments})
         )
         try:
             operation = self.kernel.submit(
@@ -266,10 +294,9 @@ class LightHouseBrain(AgentRuntime):
                 },
             )
             if (
-                operation["operation"]["status"]
-                == OperationStatus.AWAITING_CONFIRMATION.value
-                and run.auto_confirm
+                operation["operation"]["status"] == OperationStatus.AWAITING_CONFIRMATION.value
                 and capability.confirmation == ConfirmationMode.EXPLICIT
+                and self._auto_scope_allows(run, operation)
             ):
                 self.repository.append_agent_step(
                     run.id,
@@ -278,12 +305,10 @@ class LightHouseBrain(AgentRuntime):
                         "step": step_number,
                         "operation_id": operation["operation"]["id"],
                         "actor": run.actor,
+                        "scope": run.auto_scope,
                     },
                 )
-                operation = self.kernel.confirm(
-                    operation["operation"]["id"],
-                    actor=run.actor,
-                )
+                operation = self.kernel.confirm(operation["operation"]["id"], actor=run.actor)
             return operation
         except Exception as exc:
             self.repository.append_agent_step(
@@ -314,30 +339,25 @@ class LightHouseBrain(AgentRuntime):
             try:
                 data_worlds = catalog.context(workspace.id, resource_limit=80)
             except Exception as exc:
-                data_worlds = {
-                    "available": False,
-                    "error": str(exc),
-                    "error_type": type(exc).__name__,
-                }
+                data_worlds = {"available": False, "error": str(exc), "error_type": type(exc).__name__}
             state["data_worlds"] = data_worlds
             bindings = data_worlds.get("bindings") if isinstance(data_worlds, dict) else None
-            workspace_state["execution_surfaces"]["data"] = (
-                bool(bindings) or bool(workspace.data_target_id)
-            )
+            workspace_state["execution_surfaces"]["data"] = bool(bindings) or bool(workspace.data_target_id)
         if self.memory is not None:
             try:
                 conversation = self.memory.conversation_for_run(run_id)
                 recent_input = ""
                 for step in reversed(self.repository.list_agent_steps(run_id)):
                     if step.get("kind") == "user_input":
-                        payload = (
-                            step.get("payload")
-                            if isinstance(step.get("payload"), dict)
-                            else {}
-                        )
+                        payload = step.get("payload") if isinstance(step.get("payload"), dict) else {}
                         recent_input = str(payload.get("message") or "")
                         break
                 query = (run.task + " " + recent_input).strip()
+                state["usage_context"] = {
+                    "workspace_id": workspace.id,
+                    "run_id": run.id,
+                    "conversation_id": conversation["id"] if conversation else None,
+                }
                 if self.context_compiler is not None:
                     bundle = self.context_compiler.compile(
                         workspace_id=workspace.id,
@@ -375,29 +395,31 @@ class LightHouseBrain(AgentRuntime):
                     "error": str(exc),
                     "error_type": type(exc).__name__,
                 }
+        snapshot = self.snapshot(run_id)
+        state["agent_observatory"] = snapshot.get("agent_observatory")
+        state["coordination_advice"] = snapshot.get("coordination_advice")
         return state
 
     def _system_prompt(self, run) -> str:
         base = super()._system_prompt(run)
         return (
-            "You are the main LightHouse AI operating-system brain. You are trusted to "
-            "interpret intent, choose subjects, decide whether to act directly, delegate "
-            "through Agent Bus, combine both paths, request more investigation, take over "
-            "work, or ask the user only when evidence is genuinely insufficient. "
-            "Every decision receives Context Intelligence with the current request, the "
-            "latest complete conversation turns, older distilled memory, active tasks, "
-            "candidate entities, verified facts, inferences, uncertainties, available "
-            "agents and work-order results. Use that evidence semantically; do not rely on "
-            "keyword rules. Candidate rankings guide you but never replace your judgment. "
-            "You may call ordinary capabilities yourself. You may call "
-            "agent.bus.dispatch.v1 when a specialist or hidden Memory Steward adds value, "
-            "then agent.bus.status.v1 to retrieve durable results. Simple work should stay "
-            "direct. Delegated model agents are advisory until you choose and execute the "
-            "real operation. Files, policies and Receipts are reality evidence. The server "
-            "validates execution coordinates at the final boundary and will reject invalid "
-            "addresses without silently substituting another target. Do not invent factual "
-            "state; dispatch a Reality Agent or inspect through a capability when a fact is "
-            "missing or stale. Never claim completion without suitable Receipt evidence. "
+            "You are the main LightHouse AI operating-system brain and Project Director. "
+            "You are trusted to interpret intent, choose subjects, act directly, delegate, "
+            "combine both paths, create Build Cells, request investigation, take over work, "
+            "or ask the user only when evidence is genuinely insufficient. You decide whether "
+            "to wait for all Agents, wait only for critical Agents, continue without waiting, "
+            "or work in parallel and review distilled results later. Agent Bus waiting advice is "
+            "recommended evidence, never a command. For broad user-facing design, consider "
+            "Research and Taste Agents; for implementation consider Frontend and Backend Agents; "
+            "before claiming a real full-stack feature consider Wiring Verification. For massive "
+            "projects, scalable output should emerge from independent Build Cells, versioned "
+            "contracts, isolated Worktrees, non-overlapping write leases, reviewable batches, "
+            "incremental integrations and continuous regression—not one unreviewable generation. "
+            "Every decision receives Context Intelligence, available tools, Agent status and project "
+            "knowledge. Use evidence semantically; do not rely on keyword rules. You may ignore any "
+            "recommendation and remain direct when that is better. Files, policies, tests and Receipts "
+            "are reality evidence. Never call mock or static UI live unless the complete wiring path is "
+            "verified. Never claim completion without suitable Receipt and regression evidence. "
             + base
         )
 

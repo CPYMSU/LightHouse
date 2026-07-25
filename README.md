@@ -1,70 +1,141 @@
-# LightHouse OS 1.0
+# LightHouse OS 1.2
 
 LightHouse is an autonomous PostgreSQL-first AI operating terminal. The main AI is
-the highest-level decision maker: it understands the conversation, chooses tools,
-acts directly, delegates through the Agent Bus, or combines both approaches.
+the highest-level decision maker: it understands the conversation, acts directly,
+delegates to specialist Agents, waits for results, works in parallel, reviews them
+later, or combines these strategies without a fixed workflow.
 
-The system provides reliable reality and execution evidence without replacing the
-AI's semantic judgment with hard-coded workflows.
+The system provides tools, context, evidence and safe execution primitives. It does
+not replace the main AI's semantic judgment with keyword routing or mandatory steps.
 
 ## Architecture
 
 ```text
 User
-  -> Main AI / Foreground Brain
-       -> Context Intelligence
-       -> Tool Knowledge Registry
+  -> Main AI / Project Director
+       -> Context Intelligence + Tool Knowledge Registry
        -> Direct capabilities
-       -> Elastic Agent Bus
-       -> Optional Mega Project knowledge space
+       -> Observable, elastic Agent Bus
+       -> Optional Mega Project / Massive Build knowledge space
   -> Thin Operation Kernel
-  -> Data / System / Desktop executors
-  -> durable Receipts
+  -> Data / System / Desktop / Research executors
+  -> immutable Operation Receipts
 
 Background intelligence
   -> Memory Steward
-  -> file and conversation distillation
+  -> Research / Taste / Frontend / Backend Agents
+  -> Wiring / Integration / Test / Contract Agents
   -> 24-neuron reflex field
-  -> project knowledge convergence
-  -> cached Context Snapshots
+  -> cached Context and project distillation
 ```
 
-### Main AI
+## Trusted main AI
 
 The main AI can freely decide to:
 
 - execute a capability directly;
 - search or inspect the persistent tool library;
-- dispatch one or many specialist Work Orders;
-- create an optional Mega Project knowledge space;
-- continue investigation, form a plan, revise it, implement, test or regress;
-- take over work from Agents;
-- ask the user only when uncertainty materially requires it.
+- dispatch one or thousands of logical specialist Work Orders;
+- wait for all Agents, wait only for critical Agents, continue immediately, or
+  implement in parallel and review distilled results later;
+- create Build Cells, contracts, Worktrees, write leases, code batches and
+  integrations for very large projects;
+- revise the project direction when new evidence arrives;
+- ask the user only when evidence or authority genuinely requires it.
 
-Tool recommendations and project-scale advice are advisory. No file-count or
-keyword rule forces a workflow.
+Agent Bus coordination advice is advisory. No file count, keyword or phase machine
+forces the main AI to wait, plan, build or test in a particular order.
 
-### Context Intelligence
+## Agent Observatory
 
-Each model decision receives a compact evidence-rich bundle including:
+LightHouse 1.2 makes delegated intelligence visible. During a Run the terminal shows:
 
-- the current user request;
-- recent complete conversation turns;
-- older conversation summaries;
-- active tasks and candidate entities;
-- verified facts, inferences and uncertainties;
-- recent files, locators and Receipts;
-- available Agents and Work Orders;
-- relevant tool recommendations;
-- active Mega Project findings, steps and checkpoints;
-- the latest completed background neuron snapshot.
+- total, active, queued and completed Agents;
+- each Agent's role, current task, progress and status;
+- critical findings and Agent Bus waiting advice;
+- this-turn and conversation Token usage;
+- whether Token values came from the provider or local estimation.
 
-Foreground reasoning does not run repository scans or neuron ABM processing.
-Those tasks remain in background workers so the main AI can respond quickly.
+```text
+/agents
+/tokens
+```
 
-### Tool Knowledge Registry
+Professional roles include:
 
-The Capability Atlas is synchronized into PostgreSQL. The main AI and authorized
+```text
+research
+taste
+frontend
+backend
+wiring-verification
+integration
+test-design
+contract
+```
+
+Research Agents can use bounded public-web research tools. Taste Agents review
+hierarchy, typography, grid, spacing, color and generic AI-template patterns.
+Backend and Wiring Verification Agents distinguish static demos, mock-connected UI,
+API-connected features, database-connected features and Receipt-verified behavior.
+
+## Lazy Auto Mode
+
+Normal conversation, explanation, research, context loading and read-only Agent work
+do not display an Auto Mode card.
+
+When the first governed side effect actually needs permission, the terminal offers:
+
+```text
+[once] Allow once
+[auto] Auto-approve this Run
+[deny] Deny
+```
+
+A Run-scoped Auto grant is tied to the actor, Workspace, target, capability class and
+allowed roots. Scope expansion asks again. `/auto on` controls whether the action-time
+card offers the Run-scoped Auto choice; it never pre-authorizes every conversation.
+
+```text
+/auto on
+/auto off
+/auto status
+```
+
+## Receipt-preserving failure semantics
+
+Execution outcome and natural-language response outcome are independent. If a file
+was written or opened successfully and the model provider disconnects afterward,
+LightHouse preserves the successful Receipt and returns:
+
+```text
+COMPLETED_WITH_WARNING
+execution_status = succeeded
+response_status = provider_failed
+```
+
+A provider failure can no longer erase a verified real-world operation.
+
+## Token receipts
+
+Every main-AI, Memory Steward and specialist-Agent model call can persist:
+
+```text
+input_tokens
+output_tokens
+cached_input_tokens
+reasoning_tokens
+total_tokens
+model / provider
+Run / conversation / Work Order / project
+```
+
+Provider-reported usage is preferred. When a provider omits usage, LightHouse stores
+a bounded local estimate and marks it as estimated instead of presenting it as exact.
+
+## Tool Knowledge Registry
+
+The Capability Atlas is synchronized into PostgreSQL so the main AI and authorized
 Agents can rediscover tools instead of relying on prompt memory:
 
 ```text
@@ -73,83 +144,101 @@ tools.inspect.v1
 tools.recommend.v1
 ```
 
-The registry stores tool schemas, aliases, categories, risk, confirmation mode,
-requirements, examples and relations.
+The registry stores schemas, aliases, categories, risk, confirmation mode,
+requirements and examples.
 
-### Mega Project tools
+## Massive Build Mode
 
-Large projects are supported through composable primitives rather than a fixed
-state machine:
+Very large projects, including projects that cumulatively create or change tens of
+thousands of lines, are built from reviewable and independently verifiable units.
+They are not produced as one unreviewable model response.
 
 ```text
-project.create.v1
-project.inspect.v1
-project.checkpoint.v1
-project.finding.store.v1
-project.finding.search.v1
-project.step.create.v1
-project.step.update.v1
-agent.bus.dispatch_many.v1
-agent.bus.results.v1
+Build Cells
+  -> versioned shared contracts
+  -> isolated Git Worktrees when useful
+  -> non-overlapping expiring Write Leases
+  -> reviewable code batches
+  -> incremental domain and project integrations
+  -> continuous focused and regression testing
+  -> full-stack wiring evidence
+```
+
+Key tools include:
+
+```text
+project.cell.create.v1
+project.contract.create.v1
+project.write_lease.acquire.v1
+project.worktree.create.v1
+project.batch.create.v1
+project.batch.update.v1
+project.integration.create.v1
+project.integration.update.v1
+project.wiring.verify.v1
+agent.bus.wait_many.v1
+agent.bus.events.v1
+agent.bus.coordination.v1
 ```
 
 Logical Work Orders have no product-level count ceiling. Physical concurrency is
-controlled by durable Agent leases, provider capacity and PostgreSQL
-`FOR UPDATE SKIP LOCKED` claims.
+controlled by configurable worker pools, per-role Agent capacity, durable leases and
+PostgreSQL `FOR UPDATE SKIP LOCKED` claims. The default installation runs up to eight
+specialist workers and can be adjusted with `LIGHTHOUSE_AGENT_WORKERS` up to 64.
 
-Findings distinguish verified facts, inferences, risks, constraints, unknowns,
-conflicts and recommendations while retaining evidence and source Work Orders.
+Massive Build does not impose a fixed investigation, planning, implementation or test
+sequence. The main AI can create only the tools and coordination structures useful
+for the current project.
 
-### 24-neuron reflex field
+## Full-stack truth
 
-Database and memory changes create deterministic 64-dimensional stimuli. Twenty-
-four adaptive neurons maintain independent state, memory and relationships. The
-latest completed field is injected as reflex evidence for the main AI; it never
-replaces verified facts or the main AI's decision authority.
-
-### Operation Kernel
-
-Every side effect still passes through typed capabilities and a thin deterministic
-kernel that preserves:
-
-- Workspace and Target authority;
-- real address and path validation;
-- immutable Operation arguments;
-- scoped confirmation or Auto Mode authorization;
-- idempotent execution claims;
-- durable Receipts and transaction results.
-
-The kernel validates reality and authority. It does not decide what the user means.
-
-## Auto Mode
-
-Auto Mode is enabled by default. Each durable Run shows one scoped authorization
-card. After acceptance, governed Operations in that Run can continue without
-repeated confirmation cards. The authorization ends when the Run succeeds, fails,
-is cancelled, reaches its step limit, or waits for new user input.
+Feature wiring can be persisted across:
 
 ```text
-/auto on
-/auto off
-/auto status
+UI -> event -> API -> service -> repository -> database -> Receipt -> E2E
 ```
 
-Manual mode retains exact per-Operation confirmation.
+A feature is not described as real or fully connected unless suitable evidence exists.
+Static or mock dashboards remain explicitly labelled as such.
+
+## Context Intelligence
+
+Each main-AI decision receives a compact evidence-rich bundle containing recent
+complete conversation turns, older summaries, active tasks, verified facts,
+uncertainties, relevant files and Receipts, available tools, Agent state, coordination
+advice, project findings, Build Cells, contracts, write leases, integration state,
+wiring evidence and the latest completed neuron snapshot.
+
+Foreground reasoning does not synchronously scan repositories or process neuron ABM
+work. Those tasks remain in background workers.
+
+## Operation Kernel
+
+Every side effect still passes through typed capabilities and the thin deterministic
+Kernel, preserving:
+
+- Workspace and Target authority;
+- real address and allowed-root validation;
+- immutable Operation arguments;
+- action-time confirmation and scoped Auto authority;
+- idempotent execution claims;
+- durable Receipts and database transaction results.
+
+The Kernel validates reality and authority. It does not decide what the user means.
 
 ## Multi-instance Kernel
 
-Multiple local LightHouse API instances can share one PostgreSQL Data, Memory,
-Neuron and Tool Kernel while keeping separate ports, project bindings, logs and
-conversation pointers.
+Multiple local LightHouse instances share one PostgreSQL Data, Memory, Neuron, Tool,
+Agent and Massive Build state while keeping separate ports, project bindings, logs and
+conversation pointers. Database migrations are serialized with a PostgreSQL advisory
+transaction lock.
 
 ```text
-lh new
 lh new research --project /path/to/project
 lh instances
 lh attach research
 lh stop research
 lh start research
-lh --instance research "continue the project"
 ```
 
 ## Install on macOS
@@ -158,23 +247,16 @@ lh --instance research "continue the project"
 curl -fsSL https://raw.githubusercontent.com/CPYMSU/LightHouse/main/install-macos.sh | bash
 ```
 
-The installer prepares Python 3.12, PostgreSQL 16 and Git, stores credentials in
-macOS Keychain, installs the `launchd` service and `lh`, migrates the database and
-runs health checks.
-
 ## Install on Windows PowerShell
 
 ```powershell
 irm https://raw.githubusercontent.com/CPYMSU/LightHouse/main/install-windows.ps1 | iex
 ```
 
-The installer uses current-user DPAPI for credentials, preserves the database and
-configuration during upgrades, stops stale LightHouse processes before replacing
-the virtual environment, and registers the default Scheduled Task.
+The installers preserve PostgreSQL data, configuration and native secret storage
+during upgrades.
 
 ## Use
-
-Open a project directory and run:
 
 ```text
 cd /path/to/project
@@ -184,31 +266,26 @@ lh
 Then describe the goal naturally:
 
 ```text
-Investigate this repository, decide whether it needs Mega Project mode, form the
-best implementation approach, complete the code, and design regression tests.
+Investigate this repository, use as many Agents and Build Cells as useful, decide
+whether to wait for their results or work in parallel, implement the complete system,
+verify every frontend-to-database path, and finish regression testing.
 ```
 
-Useful terminal commands:
+Useful commands:
 
 ```text
 /help
 /new
 /reindex
 /status
+/agents
+/tokens
 /capabilities
 /mode auto|system|data|desktop
 /auto on|off|status
 /exit
 ```
 
-## Execution surfaces
-
-- **Data Kernel** — PostgreSQL and structured business data.
-- **System Kernel** — files, code, Git, tests, Bash/PowerShell and authorized
-  remote Linux execution.
-- **Desktop Kernel** — semantic macOS and Windows application, browser and file
-  launching.
-
-The filesystem and PostgreSQL remain sources of truth. Memory, indexes, neuron
-state and project knowledge improve relevance and speed but cannot expand Target
-authority.
+The filesystem and PostgreSQL remain sources of truth. Memory, indexes, Agent results,
+neuron state and project knowledge improve relevance and speed but cannot expand
+Target authority.

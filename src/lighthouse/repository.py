@@ -1,39 +1,65 @@
 from __future__ import annotations
 
-from dataclasses import replace
 import json
 from threading import RLock
-from typing import Any, Protocol
+from typing import Any
 from uuid import uuid4
 
 from .models import KernelMode, OperationStatus, OperationView, Target, TargetKind, Workspace, digest_json, utc_now
 
 
-class Repository(Protocol):
-    def create_target(self, *, name: str, kind: TargetKind, config: dict[str, Any]) -> Target: ...
-    def list_targets(self) -> list[Target]: ...
-    def get_target(self, target_id: str) -> Target: ...
-    def create_workspace(self, *, name: str, data_target_id: str | None, system_target_id: str | None, desktop_target_id: str | None = None) -> Workspace: ...
-    def list_workspaces(self) -> list[Workspace]: ...
-    def get_workspace(self, workspace_id: str) -> Workspace: ...
-    def create_operation(self, *, operation_id: str, workspace_id: str, target_id: str, capability: str, kernel: KernelMode, actor: str, envelope: dict[str, Any], idempotency_key: str | None) -> OperationView: ...
-    def get_operation(self, operation_id: str) -> OperationView: ...
-    def set_operation_status(self, operation_id: str, status: OperationStatus) -> OperationView: ...
-    def claim_operation(self, operation_id: str, expected: OperationStatus) -> OperationView | None: ...
-    def append_event(self, operation_id: str, event_type: str, payload: dict[str, Any]) -> dict[str, Any]: ...
-    def list_events(self, operation_id: str) -> list[dict[str, Any]]: ...
-    def save_receipt(self, operation_id: str, *, ok: bool, result: dict[str, Any]) -> dict[str, Any]: ...
-    def get_receipt(self, operation_id: str) -> dict[str, Any] | None: ...
-
-
 def _request_hash(envelope: dict[str, Any]) -> str:
-    value = dict(envelope)
-    value.pop("operation_id", None)
-    return digest_json(value)
+    comparable = dict(envelope)
+    comparable.pop("operation_id", None)
+    return digest_json(comparable)
 
 
-class InMemoryRepository:
-    def __init__(self) -> None:
+class Repository:
+    def create_target(self, *, name: str, kind: TargetKind, config: dict[str, Any]) -> Target:
+        raise NotImplementedError
+
+    def list_targets(self) -> list[Target]:
+        raise NotImplementedError
+
+    def get_target(self, target_id: str) -> Target:
+        raise NotImplementedError
+
+    def create_workspace(self, *, name: str, data_target_id: str | None, system_target_id: str | None, desktop_target_id: str | None = None) -> Workspace:
+        raise NotImplementedError
+
+    def list_workspaces(self) -> list[Workspace]:
+        raise NotImplementedError
+
+    def get_workspace(self, workspace_id: str) -> Workspace:
+        raise NotImplementedError
+
+    def create_operation(self, *, operation_id: str, workspace_id: str, target_id: str, capability: str, kernel: KernelMode, actor: str, envelope: dict[str, Any], idempotency_key: str | None) -> OperationView:
+        raise NotImplementedError
+
+    def get_operation(self, operation_id: str) -> OperationView:
+        raise NotImplementedError
+
+    def set_operation_status(self, operation_id: str, status: OperationStatus) -> OperationView:
+        raise NotImplementedError
+
+    def claim_operation(self, operation_id: str, expected: OperationStatus) -> OperationView | None:
+        raise NotImplementedError
+
+    def append_event(self, operation_id: str, event_type: str, payload: dict[str, Any]) -> dict[str, Any]:
+        raise NotImplementedError
+
+    def list_events(self, operation_id: str) -> list[dict[str, Any]]:
+        raise NotImplementedError
+
+    def save_receipt(self, operation_id: str, *, ok: bool, result: dict[str, Any]) -> dict[str, Any]:
+        raise NotImplementedError
+
+    def get_receipt(self, operation_id: str) -> dict[str, Any] | None:
+        raise NotImplementedError
+
+
+class InMemoryRepository(Repository):
+    def __init__(self):
         self.targets: dict[str, Target] = {}
         self.workspaces: dict[str, Workspace] = {}
         self.operations: dict[str, OperationView] = {}
@@ -45,7 +71,7 @@ class InMemoryRepository:
         with self._lock:
             if any(item.name == name for item in self.targets.values()):
                 raise ValueError("target name already exists")
-            target = Target(id=str(uuid4()), name=name, kind=kind, config=dict(config))
+            target = Target(id=str(uuid4()), name=name, kind=kind, config=dict(config), active=True)
             self.targets[target.id] = target
             return target
 
@@ -98,7 +124,7 @@ class InMemoryRepository:
                             raise ValueError("idempotency key is already bound to another request")
                         return item
             now = utc_now()
-            view = OperationView(
+            operation = OperationView(
                 id=operation_id,
                 status=OperationStatus.CREATED,
                 capability=capability,
@@ -112,9 +138,9 @@ class InMemoryRepository:
                 created_at=now,
                 updated_at=now,
             )
-            self.operations[operation_id] = view
-            self.events[operation_id] = []
-            return view
+            self.operations[operation.id] = operation
+            self.events[operation.id] = []
+            return operation
 
     def get_operation(self, operation_id: str) -> OperationView:
         try:
@@ -125,7 +151,20 @@ class InMemoryRepository:
     def set_operation_status(self, operation_id: str, status: OperationStatus) -> OperationView:
         with self._lock:
             current = self.get_operation(operation_id)
-            updated = replace(current, status=status, updated_at=utc_now())
+            updated = OperationView(
+                id=current.id,
+                status=status,
+                capability=current.capability,
+                kernel=current.kernel,
+                target_id=current.target_id,
+                workspace_id=current.workspace_id,
+                actor=current.actor,
+                envelope=current.envelope,
+                envelope_hash=current.envelope_hash,
+                request_hash=current.request_hash,
+                created_at=current.created_at,
+                updated_at=utc_now(),
+            )
             self.operations[operation_id] = updated
             return updated
 
@@ -139,9 +178,8 @@ class InMemoryRepository:
     def append_event(self, operation_id: str, event_type: str, payload: dict[str, Any]) -> dict[str, Any]:
         with self._lock:
             self.get_operation(operation_id)
-            sequence = len(self.events.setdefault(operation_id, [])) + 1
-            event = {"sequence": sequence, "type": event_type, "payload": payload, "created_at": utc_now().isoformat()}
-            self.events[operation_id].append(event)
+            event = {"event_type": event_type, "payload": payload, "created_at": utc_now().isoformat()}
+            self.events.setdefault(operation_id, []).append(event)
             return event
 
     def list_events(self, operation_id: str) -> list[dict[str, Any]]:
@@ -200,6 +238,10 @@ class PostgresRepository:
 
     def migrate(self, sql: str) -> None:
         with self._connect() as connection:
+            connection.execute(
+                "SELECT pg_advisory_xact_lock(hashtext(%s))",
+                ("lighthouse:migrations",),
+            )
             connection.execute(sql)
 
     def create_target(self, *, name: str, kind: TargetKind, config: dict[str, Any]) -> Target:
@@ -278,39 +320,27 @@ class PostgresRepository:
 
     def append_event(self, operation_id: str, event_type: str, payload: dict[str, Any]) -> dict[str, Any]:
         with self._connect() as connection:
-            locked = connection.execute("SELECT id FROM lh_operations WHERE id=%s FOR UPDATE", (operation_id,)).fetchone()
-            if not locked:
-                raise KeyError("operation not found")
-            row = connection.execute(
-                """INSERT INTO lh_operation_events(operation_id,sequence,event_type,payload)
-                   SELECT %s,COALESCE(MAX(sequence),0)+1,%s,%s::jsonb FROM lh_operation_events WHERE operation_id=%s
-                   RETURNING sequence,event_type,payload,created_at""",
-                (operation_id, event_type, json.dumps(payload), operation_id),
-            ).fetchone()
-        return {"sequence": row["sequence"], "type": row["event_type"], "payload": row["payload"], "created_at": row["created_at"].isoformat()}
+            row = connection.execute("INSERT INTO lh_operation_events(operation_id,event_type,payload) VALUES (%s,%s,%s::jsonb) RETURNING id,event_type,payload,created_at", (operation_id, event_type, json.dumps(payload))).fetchone()
+        return {"id": row["id"], "event_type": row["event_type"], "payload": row["payload"], "created_at": row["created_at"].isoformat()}
 
     def list_events(self, operation_id: str) -> list[dict[str, Any]]:
-        self.get_operation(operation_id)
         with self._connect() as connection:
-            rows = connection.execute("SELECT sequence,event_type,payload,created_at FROM lh_operation_events WHERE operation_id=%s ORDER BY sequence", (operation_id,)).fetchall()
-        return [{"sequence": row["sequence"], "type": row["event_type"], "payload": row["payload"], "created_at": row["created_at"].isoformat()} for row in rows]
+            rows = connection.execute("SELECT id,event_type,payload,created_at FROM lh_operation_events WHERE operation_id=%s ORDER BY id", (operation_id,)).fetchall()
+        return [{"id": row["id"], "event_type": row["event_type"], "payload": row["payload"], "created_at": row["created_at"].isoformat()} for row in rows]
 
     def save_receipt(self, operation_id: str, *, ok: bool, result: dict[str, Any]) -> dict[str, Any]:
         result_hash = digest_json(result)
         with self._connect() as connection:
-            row = connection.execute(
-                """INSERT INTO lh_operation_receipts(operation_id,ok,result,result_hash)
-                   VALUES (%s,%s,%s::jsonb,%s)
-                   ON CONFLICT (operation_id) DO UPDATE SET operation_id=EXCLUDED.operation_id
-                   RETURNING operation_id,ok,result,result_hash,created_at""",
-                (operation_id, ok, json.dumps(result), result_hash),
-            ).fetchone()
-            if row["result_hash"] != result_hash:
-                raise ValueError("operation receipt is immutable")
+            existing = connection.execute("SELECT * FROM lh_operation_receipts WHERE operation_id=%s", (operation_id,)).fetchone()
+            if existing:
+                if existing["result_hash"] != result_hash:
+                    raise ValueError("operation receipt is immutable")
+                row = existing
+            else:
+                row = connection.execute("INSERT INTO lh_operation_receipts(operation_id,ok,result,result_hash) VALUES (%s,%s,%s::jsonb,%s) RETURNING *", (operation_id, ok, json.dumps(result), result_hash)).fetchone()
         return {"operation_id": str(row["operation_id"]), "ok": row["ok"], "result": row["result"], "result_hash": row["result_hash"], "created_at": row["created_at"].isoformat()}
 
     def get_receipt(self, operation_id: str) -> dict[str, Any] | None:
-        self.get_operation(operation_id)
         with self._connect() as connection:
             row = connection.execute("SELECT * FROM lh_operation_receipts WHERE operation_id=%s", (operation_id,)).fetchone()
         if not row:

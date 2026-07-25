@@ -1,92 +1,94 @@
-# LightHouse Auto Mode
+# LightHouse Lazy Auto Mode
 
-LightHouse OS 0.9.0 adds a one-confirmation execution mode for long, multi-step
-Runs.
+LightHouse OS 1.2 keeps ordinary conversation frictionless and asks for authority
+only when a governed side effect actually needs it.
 
 ## Behavior
 
-With Auto Mode enabled, starting a natural-language task displays one scoped
-Run authorization card. If the operator accepts it, LightHouse persists
-`auto_confirm=true` on that Run and may confirm later governed operations without
-showing another confirmation card.
+Starting a natural-language Run does not display an Auto Mode authorization card.
+The main AI may converse, inspect context, search tools, read files, dispatch
+read-only Agents and perform research without requesting execution authority.
+
+When the first Operation that requires explicit confirmation is frozen, the terminal
+shows the exact action and offers:
+
+```text
+[once] Allow once
+[auto] Auto-approve this Run
+[deny] Deny
+```
 
 ```text
 user task
-  -> one Run authorization
-  -> plan and Context Intelligence
-  -> immutable Operation
-  -> automatic confirmation for this Run
+  -> Context Intelligence and optional Agents
+  -> main AI selects a governed side effect
+  -> immutable Operation is frozen
+  -> action-time permission card
+       -> once: confirm this Operation only
+       -> auto: confirm this Operation and grant a compatible Run scope
+       -> deny: keep the Operation pending
   -> Receipt
   -> continue from Receipt
-  -> repeat until terminal/input state
 ```
 
-The initial authorization is not global. It is bound to:
+## Scope
 
-- one durable Run ID;
-- one actor;
-- one Workspace and its already-bound Targets;
-- the task displayed in the authorization card;
-- the Run's maximum step count.
+A Run-scoped Auto grant is bound to:
 
-The authorization ends when the Run:
+- one durable Run ID and actor;
+- one Workspace;
+- one exact target and kernel;
+- the capability class first authorized;
+- the target's existing allowed roots;
+- terminal/input state.
 
-- succeeds;
-- fails;
-- is cancelled;
-- reaches its step limit; or
-- pauses for new user input.
+A later capability or target outside that scope asks again. Auto Mode cannot expand
+System or Desktop roots, bypass address validation, or make a high-risk capability
+available to an unauthorized Agent.
 
-A new Run asks for a new authorization.
+The grant ends when the Run:
+
+- succeeds or completes with a warning;
+- fails or is cancelled;
+- reaches its step limit;
+- pauses for new user input; or
+- requests authority outside the established scope.
 
 ## Commands
-
-Interactive terminal:
 
 ```text
 /auto on
 /auto off
 /auto status
-```
 
-Direct command:
-
-```text
 lh auto on
 lh auto off
 lh auto status
 ```
 
-Auto Mode is enabled by default after upgrading to 0.9.0, but the default only
-means the terminal offers the scoped authorization card. Nothing executes until
-the operator accepts that card.
+`/auto on` means that the action-time card offers **Auto-approve this Run**. It does
+not pre-authorize every new Run. `/auto off` keeps exact one-time confirmation only.
 
-## Manual confirmation
+## Specialist Agents
 
-When Auto Mode is off—or when the operator declines the Run authorization—each
-operation whose capability requires explicit confirmation continues to display
-its exact frozen operation card.
+Read-only specialist work does not require Auto Mode. An Agent may request a side
+effect only when:
 
-```text
-/auto off
-```
+1. the capability belongs to that Agent's registered tool set;
+2. the parent Run has a compatible Auto scope;
+3. the path remains inside the target's allowed roots; and
+4. Massive Build writes also have a valid non-overlapping Write Lease.
+
+Otherwise the Agent returns a permission-needed finding to the main AI instead of
+writing around the boundary.
 
 ## Preserved execution guarantees
 
-Auto Mode does not bypass the Operation Kernel. Every action still has:
-
-- a registered typed capability;
-- a bound Target and grounded execution address;
-- immutable arguments and an envelope hash;
-- an idempotency key;
-- a durable Operation state;
-- an execution Receipt;
-- verification before the main AI claims completion.
-
-It changes confirmation frequency, not execution truth or tool authority.
+Lazy Auto changes when permission is requested, not execution truth. Every action
+still has a typed capability, grounded Target and address, immutable arguments,
+idempotency key, durable state and Receipt.
 
 ## Multi-instance behavior
 
-The Auto Mode preference belongs to the selected local instance configuration.
-The authorization itself belongs only to the Run created on that instance.
-Other instances do not inherit it.
+The preference belongs to one local instance configuration. A grant belongs only to
+the Run that received it. Other instances and Runs do not inherit the authority.

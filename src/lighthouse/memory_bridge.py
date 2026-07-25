@@ -23,10 +23,7 @@ class MemoryRuntimeBridge:
                 if kind == "observation":
                     operation_id = str(payload.get("operation_id") or "")
                     if operation_id:
-                        self.memory.project_operation(
-                            run_id,
-                            self.kernel.snapshot(operation_id),
-                        )
+                        self.memory.project_operation(run_id, self.kernel.snapshot(operation_id))
                 elif kind == "user_input":
                     conversation = self.memory.conversation_for_run(run_id)
                     if conversation and payload.get("message"):
@@ -38,16 +35,12 @@ class MemoryRuntimeBridge:
                             metadata={"step_sequence": sequence, "kind": kind},
                         )
                         self.memory.update_task_input(run_id, str(payload["message"]))
-                        self._schedule(
-                            conversation=conversation,
-                            run_id=run_id,
-                            reason="user_input",
-                        )
-                elif kind in {"input_required", "run_completed", "run_failed"}:
+                        self._schedule(conversation=conversation, run_id=run_id, reason="user_input")
+                elif kind in {
+                    "input_required", "run_completed", "run_failed", "run_warning"
+                }:
                     conversation = self.memory.conversation_for_run(run_id)
-                    message = str(
-                        payload.get("message") or payload.get("reason") or ""
-                    ).strip()
+                    message = str(payload.get("message") or payload.get("reason") or "").strip()
                     if conversation and message:
                         self.memory.record_message(
                             conversation_id=conversation["id"],
@@ -56,23 +49,13 @@ class MemoryRuntimeBridge:
                             run_id=run_id,
                             metadata={"step_sequence": sequence, "kind": kind},
                         )
-                        self._schedule(
-                            conversation=conversation,
-                            run_id=run_id,
-                            reason=kind,
-                        )
+                        self._schedule(conversation=conversation, run_id=run_id, reason=kind)
                     if kind == "run_completed":
-                        self.memory.complete_task(
-                            run_id,
-                            status="succeeded",
-                            summary=message,
-                        )
+                        self.memory.complete_task(run_id, status="succeeded", summary=message)
+                    elif kind == "run_warning":
+                        self.memory.complete_task(run_id, status="completed", summary=message)
                     elif kind == "run_failed":
-                        self.memory.complete_task(
-                            run_id,
-                            status="failed",
-                            summary=message,
-                        )
+                        self.memory.complete_task(run_id, status="failed", summary=message)
             except Exception:
                 self._release(run_id, sequence, kind)
 
@@ -93,7 +76,7 @@ class MemoryRuntimeBridge:
             )
 
     def _claim(self, run_id: str, sequence: int, kind: str) -> bool:
-        with self.memory._connect() as connection:  # intentional internal bridge
+        with self.memory._connect() as connection:
             row = connection.execute(
                 """INSERT INTO lh_memory_projections(run_id,sequence,kind)
                    VALUES (%s,%s,%s) ON CONFLICT DO NOTHING RETURNING run_id""",

@@ -4,7 +4,7 @@ import json
 from typing import Any
 
 from . import __version__
-from .api import create_app
+from .api_v12 import create_app
 from .config import Settings
 
 

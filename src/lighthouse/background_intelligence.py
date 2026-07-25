@@ -5,11 +5,12 @@ import time
 from typing import Any
 from uuid import uuid4
 
+from .models import ConfirmationMode, KernelMode, OperationRequest, OperationStatus, digest_json
 from .provider import ModelNotConfiguredError
 
 
 class BackgroundIntelligenceWorker:
-    """Invisible worker that upgrades memory and executes advisory specialist work."""
+    """Invisible worker for memory distillation and authorized specialist Agent work."""
 
     def __init__(
         self,
@@ -19,6 +20,10 @@ class BackgroundIntelligenceWorker:
         context_compiler,
         provider,
         repository,
+        kernel=None,
+        run_repository=None,
+        project_store=None,
+        massive_build=None,
         poll_interval: float = 0.5,
     ):
         self.agent_bus = agent_bus
@@ -26,6 +31,10 @@ class BackgroundIntelligenceWorker:
         self.context_compiler = context_compiler
         self.provider = provider
         self.repository = repository
+        self.kernel = kernel
+        self.run_repository = run_repository
+        self.project_store = project_store
+        self.massive_build = massive_build
         self.poll_interval = max(0.1, min(float(poll_interval), 5.0))
         self.worker_id = f"memory-steward-{uuid4().hex[:10]}"
         self._stop = threading.Event()
@@ -55,7 +64,7 @@ class BackgroundIntelligenceWorker:
                 work_order = self.agent_bus.claim_work_order(
                     worker_id=self.worker_id,
                     execution_modes=("model",),
-                    lease_seconds=180,
+                    lease_seconds=300,
                 )
                 if work_order:
                     did_work = True
@@ -93,23 +102,256 @@ class BackgroundIntelligenceWorker:
     def _run_model_work_order(self, work_order: dict[str, Any]) -> None:
         work_order_id = work_order["id"]
         try:
-            self.agent_bus.mark_running(work_order_id, worker_id=self.worker_id)
-            result = self.provider.distill(
-                kind="specialist_work",
-                payload={
-                    "role": work_order["role"],
-                    "goal": work_order["goal"],
-                    "context": work_order.get("payload") or {},
-                    "constraints": {
-                        "advisory_only": True,
-                        "do_not_claim_execution": True,
-                        "return_evidence": True,
+            work_order = self.agent_bus.mark_running(work_order_id, worker_id=self.worker_id)
+            agent = self.agent_bus.agent_for_work_order(work_order_id)
+            payload = dict(work_order.get("payload") or {})
+            project_id = str(payload.get("project_id") or "") or None
+            parent_run_id = str(work_order.get("parent_run_id") or "") or None
+            allowed_tools = [
+                name for name in (agent.get("capabilities") or [])
+                if self._capability_exists(str(name))
+            ]
+            tool_results = list(payload.get("tool_results") or [])
+            result: dict[str, Any] = {}
+            for round_index in range(1, 9):
+                result = self.provider.distill(
+                    kind="specialist_work",
+                    payload={
+                        "role": work_order["role"],
+                        "goal": work_order["goal"],
+                        "context": payload,
+                        "allowed_tools": allowed_tools,
+                        "tool_results": tool_results[-20:],
+                        "round": round_index,
+                        "constraints": {
+                            "main_ai_is_project_director": True,
+                            "main_ai_may_wait_or_continue": True,
+                            "do_not_claim_unreceipted_execution": True,
+                            "writes_require_run_scope": True,
+                            "massive_project_writes_require_lease": bool(project_id),
+                        },
+                        "_usage_context": {
+                            "workspace_id": work_order["workspace_id"],
+                            "run_id": parent_run_id,
+                            "work_order_id": work_order_id,
+                            "agent_id": agent["id"],
+                            "project_id": project_id,
+                        },
                     },
-                },
+                )
+                progress = max(0.0, min(float(result.get("progress") or 0.0), 1.0))
+                criticality = str(result.get("criticality") or "background")
+                summary = str(result.get("summary") or work_order["goal"])
+                self.agent_bus.report_progress(
+                    work_order_id,
+                    progress=progress,
+                    summary=summary,
+                    criticality=criticality,
+                )
+                if criticality in {"important", "critical"}:
+                    self.agent_bus.append_work_event(
+                        work_order_id,
+                        "agent_attention",
+                        {
+                            "criticality": criticality,
+                            "summary": summary,
+                            "findings": result.get("findings") or [],
+                        },
+                    )
+                calls = result.get("tool_calls")
+                if not isinstance(calls, list) or not calls:
+                    if result.get("complete") is False and round_index < 8:
+                        continue
+                    break
+                round_results = []
+                for call_index, call in enumerate(calls[:8]):
+                    round_results.append(
+                        self._execute_specialist_tool(
+                            work_order=work_order,
+                            agent=agent,
+                            call=call,
+                            round_index=round_index,
+                            call_index=call_index,
+                            project_id=project_id,
+                            parent_run_id=parent_run_id,
+                        )
+                    )
+                tool_results.extend(round_results)
+                if any(item.get("permission_required") for item in round_results):
+                    result["complete"] = False
+                    result.setdefault("uncertainties", []).append(
+                        "A proposed side effect needs the main AI or user to establish a compatible Run scope."
+                    )
+                    break
+                if result.get("complete") is True and not calls:
+                    break
+            result["tool_results"] = tool_results[-40:]
+            result["allowed_tools"] = allowed_tools
+            result["work_order_id"] = work_order_id
+            self._store_specialist_findings(work_order, result, project_id=project_id)
+            self.agent_bus.report_progress(
+                work_order_id,
+                progress=1.0 if result.get("complete") is not False else max(0.01, float(result.get("progress") or 0.0)),
+                summary=str(result.get("summary") or "Specialist result ready"),
+                criticality=str(result.get("criticality") or "checkpoint"),
             )
             self.agent_bus.complete(work_order_id, result=result)
         except Exception as exc:
             self.agent_bus.fail(work_order_id, error=str(exc))
+
+    def _execute_specialist_tool(
+        self,
+        *,
+        work_order: dict[str, Any],
+        agent: dict[str, Any],
+        call: Any,
+        round_index: int,
+        call_index: int,
+        project_id: str | None,
+        parent_run_id: str | None,
+    ) -> dict[str, Any]:
+        if not isinstance(call, dict):
+            return {"ok": False, "error": "tool call must be an object"}
+        capability_name = str(call.get("capability") or "").strip()
+        arguments = call.get("arguments")
+        if not capability_name or not isinstance(arguments, dict):
+            return {"ok": False, "error": "tool call requires capability and arguments"}
+        if capability_name not in set(agent.get("capabilities") or []):
+            return {"ok": False, "capability": capability_name, "error": "tool is not authorized for this Agent"}
+        if self.kernel is None:
+            return {"ok": False, "capability": capability_name, "error": "Operation Kernel is unavailable"}
+        capability = self.kernel.registry.get(capability_name)
+        if capability.confirmation != ConfirmationMode.DIRECT:
+            scope = self._parent_auto_scope(parent_run_id)
+            if not self._scope_allows(scope, work_order, capability_name):
+                return {
+                    "ok": False,
+                    "capability": capability_name,
+                    "permission_required": True,
+                    "error": "The parent Run has no compatible Auto scope for this side effect.",
+                }
+            if project_id and self.massive_build is not None:
+                path = str(arguments.get("path") or arguments.get("cwd") or ".")
+                lease = self.massive_build.valid_lease(
+                    project_id=project_id,
+                    owner_work_order_id=work_order["id"],
+                    path=path,
+                )
+                if lease is None:
+                    return {
+                        "ok": False,
+                        "capability": capability_name,
+                        "permission_required": True,
+                        "error": "Massive Build write requires an active non-overlapping Write Lease.",
+                    }
+        actor = str(work_order.get("requested_by") or "main-ai")
+        idempotency_key = (
+            f"agent-work:{work_order['id']}:{round_index}:{call_index}:"
+            + digest_json({"capability": capability_name, "arguments": arguments})
+        )
+        snapshot = self.kernel.submit(
+            OperationRequest(
+                capability=capability_name,
+                arguments=dict(arguments),
+                workspace_id=work_order["workspace_id"],
+                actor=actor,
+                mode=KernelMode.AUTO,
+                idempotency_key=idempotency_key,
+            )
+        )
+        if snapshot["operation"]["status"] == OperationStatus.AWAITING_CONFIRMATION.value:
+            scope = self._parent_auto_scope(parent_run_id)
+            if self._scope_allows(scope, work_order, capability_name):
+                snapshot = self.kernel.confirm(snapshot["operation"]["id"], actor=actor)
+            else:
+                self.agent_bus.mark_waiting_confirmation(
+                    work_order["id"],
+                    operation_id=snapshot["operation"]["id"],
+                    capability=capability_name,
+                )
+                return {
+                    "ok": False,
+                    "capability": capability_name,
+                    "operation_id": snapshot["operation"]["id"],
+                    "permission_required": True,
+                }
+        return {
+            "ok": bool((snapshot.get("receipt") or {}).get("ok")),
+            "capability": capability_name,
+            "operation": snapshot.get("operation"),
+            "receipt": snapshot.get("receipt"),
+        }
+
+    def _parent_auto_scope(self, parent_run_id: str | None) -> dict[str, Any]:
+        if not parent_run_id or self.run_repository is None:
+            return {}
+        try:
+            run = self.run_repository.get_agent_run(parent_run_id)
+            return dict(run.auto_scope or {}) if run.auto_confirm else {}
+        except Exception:
+            return {}
+
+    @staticmethod
+    def _scope_allows(
+        scope: dict[str, Any],
+        work_order: dict[str, Any],
+        capability_name: str,
+    ) -> bool:
+        return bool(
+            scope
+            and scope.get("workspace_id") == work_order.get("workspace_id")
+            and capability_name in set(scope.get("allowed_capabilities") or [])
+        )
+
+    def _capability_exists(self, name: str) -> bool:
+        if self.kernel is None:
+            return False
+        try:
+            self.kernel.registry.get(name)
+            return True
+        except KeyError:
+            return False
+
+    def _store_specialist_findings(
+        self,
+        work_order: dict[str, Any],
+        result: dict[str, Any],
+        *,
+        project_id: str | None,
+    ) -> None:
+        if not project_id or self.project_store is None:
+            return
+        findings = result.get("findings")
+        if not isinstance(findings, list):
+            return
+        for item in findings[:40]:
+            if isinstance(item, str):
+                claim = item
+                metadata = {}
+                confidence = 0.6
+                evidence = result.get("evidence") or []
+            elif isinstance(item, dict):
+                claim = str(item.get("claim") or item.get("finding") or item.get("summary") or "")
+                metadata = {key: value for key, value in item.items() if key not in {"claim", "evidence", "confidence"}}
+                confidence = float(item.get("confidence") or 0.6)
+                evidence = item.get("evidence") or result.get("evidence") or []
+            else:
+                continue
+            if not claim.strip():
+                continue
+            try:
+                self.project_store.store_finding(
+                    project_id=project_id,
+                    finding_type="verified_fact" if evidence else "inference",
+                    claim=claim.strip(),
+                    domain=str(work_order.get("role") or "general"),
+                    confidence=confidence,
+                    evidence=evidence if isinstance(evidence, list) else [evidence],
+                    source_work_order_id=work_order["id"],
+                    metadata=metadata,
+                )
+            except Exception:
+                pass
 
     def _run_background_job(self, job: dict[str, Any]) -> None:
         job_id = job["id"]
@@ -170,14 +412,16 @@ class BackgroundIntelligenceWorker:
                 "Summarize older context only. Do not replace or paraphrase the recent "
                 "turns that the main AI receives verbatim."
             ),
+            "_usage_context": {
+                "workspace_id": str(conversation["workspace_id"]),
+                "conversation_id": conversation_id,
+                "run_id": job.get("run_id"),
+            },
         }
         level = 1
         model = None
         try:
-            result = self.provider.distill(
-                kind="conversation_memory",
-                payload=payload,
-            )
+            result = self.provider.distill(kind="conversation_memory", payload=payload)
             level = 2
             model = getattr(self.provider, "model", None)
         except ModelNotConfiguredError:
@@ -212,8 +456,7 @@ class BackgroundIntelligenceWorker:
         if not actor and conversation_id:
             with self.memory._connect() as connection:
                 row = connection.execute(
-                    "SELECT actor FROM lh_conversations WHERE id=%s",
-                    (conversation_id,),
+                    "SELECT actor FROM lh_conversations WHERE id=%s", (conversation_id,)
                 ).fetchone()
             actor = str(row["actor"]) if row else ""
         bundle = self.context_compiler.compile(
@@ -268,8 +511,7 @@ class BackgroundIntelligenceWorker:
         summary_parts = []
         if task:
             summary_parts.append(
-                "Active task: "
-                + str(task.get("goal") or "")
+                "Active task: " + str(task.get("goal") or "")
                 + (f" ({task.get('status')})" if task.get("status") else "")
             )
         if lines:
