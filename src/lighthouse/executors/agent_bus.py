@@ -128,7 +128,13 @@ class AgentBusExecutor:
         ]
         proposed = Path(raw).expanduser()
         candidate = proposed.resolve() if proposed.is_absolute() else (default_cwd / proposed).resolve()
-        inside = any(candidate == root or exists,
+        inside = any(candidate == root or root in candidate.parents for root in roots)
+        exists = candidate.exists()
+        return {
+            "verified_facts": {
+                "proposed_path": raw,
+                "canonical_path": str(candidate),
+                "exists": exists,
                 "inside_allowed_roots": inside,
                 "is_file": candidate.is_file() if exists else False,
                 "is_directory": candidate.is_dir() if exists else False,
