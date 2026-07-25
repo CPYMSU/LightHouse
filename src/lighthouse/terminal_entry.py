@@ -5,6 +5,7 @@ from typing import Any
 
 from . import __version__
 from . import terminal as base
+from . import terminal_v3  # compatibility marker for 1.0 installer contracts
 from . import terminal_v4
 from .ui import SwissTerminal
 
