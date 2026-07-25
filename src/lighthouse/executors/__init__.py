@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Any
 
 from ..models import Capability, ExecutionResult, Target
+from .agent_bus import AgentBusExecutor
 from .desktop import DesktopExecutor
 from .postgres import PostgresExecutor
 from .project_file import ProjectFileExecutor
@@ -34,6 +35,7 @@ class SystemExecutor:
 
 
 __all__ = [
+    "AgentBusExecutor",
     "DesktopExecutor",
     "PostgresExecutor",
     "ProjectFileExecutor",
