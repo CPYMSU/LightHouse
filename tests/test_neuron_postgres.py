@@ -4,10 +4,11 @@ import os
 from uuid import uuid4
 
 import psycopg
+from psycopg.rows import dict_row
 import pytest
 
 from lighthouse.bootstrap import migration_sql
-from lighthouse.neuron_runtime import PostgresNeuronRuntime
+from lighthouse.neuron_adaptation import AdaptivePostgresNeuronRuntime
 from lighthouse.repository import PostgresRepository
 
 
@@ -15,7 +16,7 @@ DSN = os.environ.get("TEST_DATABASE_URL", "")
 pytestmark = pytest.mark.skipif(not DSN, reason="TEST_DATABASE_URL is not configured")
 
 
-def test_postgres_neuron_runtime_captures_and_processes_data_change():
+def test_postgres_neuron_runtime_captures_processes_and_learns_from_change():
     repository = PostgresRepository(DSN)
     repository.migrate(migration_sql())
     workspace = repository.create_workspace(
@@ -23,7 +24,7 @@ def test_postgres_neuron_runtime_captures_and_processes_data_change():
         data_target_id=None,
         system_target_id=None,
     )
-    runtime = PostgresNeuronRuntime(DSN)
+    runtime = AdaptivePostgresNeuronRuntime(DSN)
 
     try:
         event = runtime.emit_event(
@@ -37,6 +38,8 @@ def test_postgres_neuron_runtime_captures_and_processes_data_change():
         processed = runtime.process_event(event["id"])
 
         assert processed["status"] == "processed"
+        assert processed["learning"]["applied"] is True
+        assert processed["learning"]["reward"] < 0
         assert len(processed["stimulus_vector"]) == 64
         assert len(processed["abm"]["state_vector"]) == 24 * 8
 
@@ -55,11 +58,21 @@ def test_postgres_neuron_runtime_captures_and_processes_data_change():
                 "SELECT count(*) FROM lh_neuron_memories WHERE workspace_id=%s",
                 (workspace.id,),
             ).fetchone()[0]
+            weight_count = connection.execute(
+                "SELECT count(*) FROM lh_neuron_weights WHERE workspace_id=%s",
+                (workspace.id,),
+            ).fetchone()[0]
+            edge_count = connection.execute(
+                "SELECT count(*) FROM lh_neuron_edges WHERE workspace_id=%s",
+                (workspace.id,),
+            ).fetchone()[0]
 
         assert neuron_count == 24
         assert vector_space_count == 24
         assert state_count == 24
-        assert memory_count == 24
+        assert memory_count == 48
+        assert weight_count == 24
+        assert edge_count == 24 * 23
         assert runtime.current_summary(workspace_id=workspace.id)["dominant_neurons"]
     finally:
         with psycopg.connect(DSN) as connection:
@@ -81,7 +94,7 @@ def test_memory_message_insert_creates_a_nonblocking_stimulus_event():
     conversation_id = str(uuid4())
 
     try:
-        with psycopg.connect(DSN) as connection:
+        with psycopg.connect(DSN, row_factory=dict_row) as connection:
             connection.execute(
                 """INSERT INTO lh_conversations(id,workspace_id,actor,title)
                    VALUES (%s,%s,'integration','trigger test')""",
