@@ -1,3 +1,3 @@
-"""LightHouse OS — PostgreSQL-first governed AI operating terminal."""
+"""LightHouse OS — autonomous PostgreSQL-first AI operating terminal."""
 
-__version__ = "0.9.1"
+__version__ = "1.0.0"
