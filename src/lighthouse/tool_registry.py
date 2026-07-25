@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 from typing import Any, Iterable
 from uuid import uuid4
 
@@ -13,6 +14,21 @@ def _json(value: Any) -> str:
         separators=(",", ":"),
         default=str,
     )
+
+
+def _terms(value: str) -> set[str]:
+    normalized = re.sub(r"[^a-z0-9\u3400-\u9fff]+", " ", str(value or "").lower())
+    words = {part for part in normalized.split() if part}
+    expanded = set(words)
+    for word in words:
+        if len(word) > 4 and word.endswith("s"):
+            expanded.add(word[:-1])
+        if len(word) > 5 and word.endswith("ing"):
+            expanded.add(word[:-3])
+    for run in re.findall(r"[\u3400-\u9fff]+", normalized):
+        expanded.add(run)
+        expanded.update(run[index : index + 2] for index in range(max(0, len(run) - 1)))
+    return expanded
 
 
 def _category(tool_name: str) -> str:
@@ -120,25 +136,50 @@ class PostgresToolRegistry:
         if categories:
             clauses.append("category = ANY(%s)")
             params.append(list(categories))
-        if query:
-            clauses.append(
-                "(search_vector @@ plainto_tsquery('simple',%s) OR "
-                "tool_name ILIKE %s OR title ILIKE %s OR description ILIKE %s)"
-            )
-            params.extend([query, f"%{query}%", f"%{query}%", f"%{query}%"])
         where = " WHERE " + " AND ".join(clauses) if clauses else ""
-        params.append(limit)
         with self._connect() as connection:
             rows = connection.execute(
-                f"""SELECT *,
-                       CASE WHEN %s <> '' THEN ts_rank(search_vector,plainto_tsquery('simple',%s))
-                            ELSE 0 END AS relevance
-                    FROM lh_tools{where}
-                    ORDER BY relevance DESC,updated_at DESC,tool_name
-                    LIMIT %s""",
-                [query, query, *params],
+                f"""SELECT * FROM lh_tools{where}
+                    ORDER BY updated_at DESC,tool_name LIMIT 500""",
+                params,
             ).fetchall()
-        return [self._tool_dict(row) for row in rows]
+
+        query_lower = query.lower()
+        query_terms = _terms(query)
+        ranked: list[tuple[float, str, dict[str, Any]]] = []
+        for row in rows:
+            value = self._tool_dict(row)
+            aliases = value.get("capabilities") if isinstance(value.get("capabilities"), list) else []
+            metadata = value.get("metadata") if isinstance(value.get("metadata"), dict) else {}
+            metadata_aliases = metadata.get("aliases") if isinstance(metadata.get("aliases"), list) else []
+            haystack = " ".join(
+                [
+                    str(value.get("tool_name") or ""),
+                    str(value.get("title") or ""),
+                    str(value.get("description") or ""),
+                    str(value.get("category") or ""),
+                    *(str(item) for item in aliases),
+                    *(str(item) for item in metadata_aliases),
+                ]
+            ).lower()
+            if not query:
+                score = 1.0
+            else:
+                haystack_terms = _terms(haystack)
+                matched = query_terms & haystack_terms
+                score = float(len(matched))
+                if query_lower in haystack:
+                    score += 8.0
+                tool_name = str(value.get("tool_name") or "").lower()
+                title = str(value.get("title") or "").lower()
+                if query_lower == tool_name or query_lower == title:
+                    score += 20.0
+                if not score:
+                    continue
+            value["relevance"] = score / max(1.0, float(len(query_terms) or 1))
+            ranked.append((-score, str(value.get("tool_name") or ""), value))
+        ranked.sort(key=lambda item: (item[0], item[1]))
+        return [value for _score, _name, value in ranked[:limit]]
 
     def inspect(self, tool_name: str, *, version: str = "v1") -> dict[str, Any]:
         with self._connect() as connection:
@@ -177,7 +218,7 @@ class PostgresToolRegistry:
                     "tool_name": item["tool_name"],
                     "category": item["category"],
                     "why_relevant": item["description"],
-                    "confidence": min(0.95, 0.55 + float(item.get("relevance") or 0.0)),
+                    "confidence": min(0.95, 0.55 + 0.08 * float(item.get("relevance") or 0.0)),
                     "estimated_cost": {
                         "latency": "background" if item["category"] in {"agent-collaboration", "mega-project"} else "direct",
                         "model_calls": "variable" if item["tool_name"].startswith("agent.bus.") else "none_or_tool_defined",
