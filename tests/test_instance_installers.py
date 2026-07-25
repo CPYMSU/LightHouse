@@ -11,6 +11,16 @@ def test_macos_installer_allocates_instead_of_rejecting_port_conflicts():
     assert "from lighthouse.instances import ensure_default_instance" in script
 
 
+def test_windows_bootstrap_stops_the_installed_runtime_before_upgrade():
+    script = Path("install-windows.ps1").read_text(encoding="utf-8")
+    assert "function Stop-LightHouseRuntime" in script
+    assert "Stop-ScheduledTask -TaskName 'LightHouse'" in script
+    assert "Get-CimInstance Win32_Process" in script
+    assert "StartsWith($venvRoot" in script
+    assert "Stop-LightHouseRuntime" in script.split("-Stage Install")[0]
+    assert "v=0.9.1" in script
+
+
 def test_windows_core_allocates_and_registers_the_default_instance():
     script = Path("install-windows-core.ps1").read_text(encoding="utf-8")
     assert "function Find-FreeApiPort" in script
