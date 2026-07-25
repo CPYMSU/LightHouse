@@ -38,14 +38,17 @@ def test_windows_service_uses_the_configured_port_everywhere():
     assert "$env:LIGHTHOUSE_INSTANCE_ID = 'default'" in script
 
 
-def test_console_entrypoint_wraps_the_auto_mode_terminal_entry():
+def test_console_entrypoint_wraps_the_lazy_auto_observatory_terminal():
     project = Path("pyproject.toml").read_text(encoding="utf-8")
     instance_entry = Path("src/lighthouse/instance_entry.py").read_text(encoding="utf-8")
     terminal_entry = Path("src/lighthouse/terminal_entry.py").read_text(encoding="utf-8")
-    terminal_v3 = Path("src/lighthouse/terminal_v3.py").read_text(encoding="utf-8")
+    terminal_v4 = Path("src/lighthouse/terminal_v4.py").read_text(encoding="utf-8")
     assert 'lh = "lighthouse.instance_entry:main"' in project
     assert "from . import terminal_entry" in instance_entry
     assert "return terminal_entry.main(argv)" in instance_entry
-    assert "from . import terminal_v3" in terminal_entry
-    assert "return terminal_v3.main(argv)" in terminal_entry
-    assert 'AUTO_MODE_KEY = "auto_mode"' in terminal_v3
+    assert "from . import terminal_v3" in terminal_entry  # 1.0 compatibility marker
+    assert "from . import terminal_v4" in terminal_entry
+    assert "return terminal_v4.main(argv)" in terminal_entry
+    assert 'AUTO_MODE_KEY = "auto_mode"' in terminal_v4
+    assert "ASK ON ACTION" in terminal_entry
+    assert "_ask_auto_mode" not in terminal_v4
