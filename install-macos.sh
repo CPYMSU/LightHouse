@@ -86,8 +86,51 @@ brew list git >/dev/null 2>&1 || brew install git </dev/null
 PYTHON="$(brew --prefix python@3.12)/bin/python3.12"
 PG_BIN="$(brew --prefix postgresql@16)/bin"
 BREW_PREFIX="$(brew --prefix)"
+PG_DATA="$BREW_PREFIX/var/postgresql@16"
+PG_LOG="$LOG_DIR/postgresql.log"
 mkdir -p "$INSTALL_ROOT" "$LOG_DIR" "$HOME/Library/LaunchAgents"
 chmod 700 "$INSTALL_ROOT"
+
+postgres_ready() {
+  "$PG_BIN/pg_isready" -h 127.0.0.1 -p 5432 >/dev/null 2>&1
+}
+
+wait_for_postgres() {
+  local attempts="${1:-30}" attempt
+  for ((attempt = 0; attempt < attempts; attempt++)); do
+    postgres_ready && return 0
+    sleep 1
+  done
+  return 1
+}
+
+start_postgres_with_recovery() {
+  if postgres_ready; then
+    say "PostgreSQL is already ready"
+    return 0
+  fi
+
+  if brew services start postgresql@16 >/dev/null 2>&1 </dev/null; then
+    wait_for_postgres 30 && return 0
+  fi
+
+  say "PostgreSQL service startup issue detected; repairing automatically"
+  brew services stop postgresql@16 >/dev/null 2>&1 </dev/null || true
+  launchctl bootout "gui/$(id -u)/homebrew.mxcl.postgresql@16" >/dev/null 2>&1 || true
+  brew services cleanup >/dev/null 2>&1 || true
+
+  if brew services start postgresql@16 >/dev/null 2>&1 </dev/null; then
+    wait_for_postgres 30 && return 0
+  fi
+
+  if [[ -f "$PG_DATA/PG_VERSION" ]]; then
+    say "Homebrew service registration is unavailable; starting PostgreSQL directly"
+    "$PG_BIN/pg_ctl" -D "$PG_DATA" -l "$PG_LOG" start >/dev/null 2>&1 || true
+    wait_for_postgres 30 && return 0
+  fi
+
+  return 1
+}
 
 SHELLENV_LINE="eval \"\$($BREW_PREFIX/bin/brew shellenv)\""
 touch "$HOME/.zprofile"
@@ -96,12 +139,13 @@ if ! grep -Fqx "$SHELLENV_LINE" "$HOME/.zprofile"; then
 fi
 
 say "Starting the shared local PostgreSQL Data and Memory Kernel"
-brew services start postgresql@16 >/dev/null </dev/null
-for _ in {1..60}; do
-  "$PG_BIN/pg_isready" -h 127.0.0.1 -p 5432 >/dev/null 2>&1 && break
-  sleep 1
-done
-"$PG_BIN/pg_isready" -h 127.0.0.1 -p 5432 >/dev/null 2>&1 || fail "PostgreSQL did not become ready"
+if ! start_postgres_with_recovery; then
+  printf '\nPostgreSQL could not be started automatically. Existing database files were not modified.\n' >&2
+  printf 'Diagnostic log: %s\n' "$PG_LOG" >&2
+  [[ -s "$PG_LOG" ]] && tail -n 80 "$PG_LOG" >&2 || true
+  fail "PostgreSQL did not become ready"
+fi
+say "PostgreSQL is ready"
 if ! "$PG_BIN/psql" -h 127.0.0.1 -d postgres -tAc "SELECT 1 FROM pg_database WHERE datname='lighthouse'" | grep -q 1; then
   "$PG_BIN/createdb" -h 127.0.0.1 lighthouse
 fi
