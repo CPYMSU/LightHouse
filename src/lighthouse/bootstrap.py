@@ -11,7 +11,6 @@ from .background_intelligence import BackgroundIntelligenceWorker
 from .brain import LightHouseBrain
 from .capabilities import CapabilityRegistry, DEFAULT_CAPABILITIES
 from .config import Settings
-from .context_intelligence import ContextCompiler
 from .data_capabilities import DATA_KERNEL_CAPABILITIES
 from .data_kernel import DataTargetResolver, PostgresDataCatalog
 from .executors import (
@@ -25,6 +24,7 @@ from .extra_capabilities import SYSTEM_TYPED_CAPABILITIES
 from .kernel import OperationKernel
 from .memory_search import PostgresMemoryFabric
 from .neuron_adaptation import AdaptivePostgresNeuronRuntime
+from .neuron_context import NeuronAwareContextCompiler
 from .neuron_runtime import NeuronReflexWorker
 from .provider import DisabledProvider, OpenAICompatibleProvider
 from .repository import PostgresRepository
@@ -64,7 +64,11 @@ def build_kernel(settings: Settings, *, migrate: bool = True) -> OperationKernel
     neuron_runtime = AdaptivePostgresNeuronRuntime(settings.database_url)
     agent_bus.register_builtin_agents()
     memory.bind_agent_bus(agent_bus)
-    context_compiler = ContextCompiler(memory, agent_bus)
+    context_compiler = NeuronAwareContextCompiler(
+        memory,
+        agent_bus,
+        neuron_runtime,
+    )
     registry = CapabilityRegistry(
         (
             *DEFAULT_CAPABILITIES,
@@ -125,7 +129,7 @@ def build_brain(settings: Settings, kernel: OperationKernel) -> LightHouseBrain:
     memory.bind_agent_bus(agent_bus)
     context_compiler = (
         getattr(kernel, "context_compiler", None)
-        or ContextCompiler(memory, agent_bus)
+        or NeuronAwareContextCompiler(memory, agent_bus, neuron_runtime)
     )
     brain = LightHouseBrain(
         state_repository,
