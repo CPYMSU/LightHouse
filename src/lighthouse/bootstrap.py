@@ -23,7 +23,8 @@ from .executors import (
 from .extra_capabilities import SYSTEM_TYPED_CAPABILITIES
 from .kernel import OperationKernel
 from .memory_search import PostgresMemoryFabric
-from .neuron_runtime import NeuronReflexWorker, PostgresNeuronRuntime
+from .neuron_adaptation import AdaptivePostgresNeuronRuntime
+from .neuron_runtime import NeuronReflexWorker
 from .provider import DisabledProvider, OpenAICompatibleProvider
 from .repository import PostgresRepository
 
@@ -48,7 +49,7 @@ def build_kernel(settings: Settings, *, migrate: bool = True) -> OperationKernel
     catalog = PostgresDataCatalog(settings.database_url)
     memory = PostgresMemoryFabric(settings.database_url)
     agent_bus = PostgresAgentBus(settings.database_url)
-    neuron_runtime = PostgresNeuronRuntime(settings.database_url)
+    neuron_runtime = AdaptivePostgresNeuronRuntime(settings.database_url)
     agent_bus.register_builtin_agents()
     memory.bind_agent_bus(agent_bus)
     context_compiler = ContextCompiler(memory, agent_bus)
@@ -106,7 +107,7 @@ def build_brain(settings: Settings, kernel: OperationKernel) -> LightHouseBrain:
     agent_bus = getattr(kernel, "agent_bus", None) or PostgresAgentBus(settings.database_url)
     neuron_runtime = (
         getattr(kernel, "neuron_runtime", None)
-        or PostgresNeuronRuntime(settings.database_url)
+        or AdaptivePostgresNeuronRuntime(settings.database_url)
     )
     agent_bus.register_builtin_agents()
     memory.bind_agent_bus(agent_bus)
