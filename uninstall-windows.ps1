@@ -11,6 +11,27 @@ $TaskName = 'LightHouse'
 $InstallRoot = if ($env:LIGHTHOUSE_HOME) { [IO.Path]::GetFullPath($env:LIGHTHOUSE_HOME) } else { Join-Path $HOME '.lighthouse' }
 $BinDir = Join-Path $InstallRoot 'bin'
 $ConfigFile = Join-Path $InstallRoot 'config.json'
+$VenvPython = Join-Path $InstallRoot 'venv\Scripts\python.exe'
+
+if (Test-Path -LiteralPath $VenvPython -PathType Leaf) {
+    Write-Host 'Stopping additional managed LightHouse instances' -ForegroundColor Cyan
+    $previousHome = $env:LIGHTHOUSE_HOME
+    try {
+        $env:LIGHTHOUSE_HOME = $InstallRoot
+        & $VenvPython -c "from lighthouse.instances import list_instances, stop_instance; [stop_instance(item.id, force=True) for item in list_instances() if item.id != 'default']" 2>$null
+    }
+    catch {
+        Write-Warning "Could not stop every additional instance cleanly: $($_.Exception.Message)"
+    }
+    finally {
+        if ($null -eq $previousHome) {
+            Remove-Item Env:LIGHTHOUSE_HOME -ErrorAction SilentlyContinue
+        }
+        else {
+            $env:LIGHTHOUSE_HOME = $previousHome
+        }
+    }
+}
 
 Write-Host 'Removing the LightHouse Windows background task' -ForegroundColor Cyan
 try { Stop-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue } catch { }
@@ -46,13 +67,13 @@ if ($userPath) {
 }
 
 if ($KeepConfig) {
-    Write-Host 'Removing application files while preserving config, encrypted secrets and private database data' -ForegroundColor Cyan
+    Write-Host 'Removing application files while preserving config, encrypted secrets, instance records and private database data' -ForegroundColor Cyan
     foreach ($name in @('app', 'venv', 'bin', 'logs', 'start-server.ps1')) {
         Remove-Item -LiteralPath (Join-Path $InstallRoot $name) -Recurse -Force -ErrorAction SilentlyContinue
     }
 }
 else {
-    Write-Host 'Removing LightHouse application files, private database and user-bound encrypted secrets' -ForegroundColor Cyan
+    Write-Host 'Removing LightHouse application files, managed instances, private database and user-bound encrypted secrets' -ForegroundColor Cyan
     Remove-Item -LiteralPath $InstallRoot -Recurse -Force -ErrorAction SilentlyContinue
     $secretRoot = Join-Path $env:LOCALAPPDATA 'LightHouse\secrets'
     Remove-Item -LiteralPath $secretRoot -Recurse -Force -ErrorAction SilentlyContinue

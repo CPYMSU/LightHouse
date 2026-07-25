@@ -10,7 +10,7 @@ $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
 
 $TaskName = 'LightHouse'
-$ApiPort = 8787
+$ApiPort = 0
 
 function Write-Step([string]$Message) {
     Write-Host $Message -ForegroundColor Cyan
@@ -78,6 +78,7 @@ function New-ServerScriptContent(
 `$ErrorActionPreference = 'Stop'
 `$env:PYTHONUTF8 = '1'
 `$env:LIGHTHOUSE_CONFIG = '$escapedConfig'
+`$env:LIGHTHOUSE_INSTANCE_ID = 'default'
 try {
     "`$(Get-Date -Format o) START" | Add-Content -LiteralPath '$escapedStartup' -Encoding UTF8
 $DatabasePrelude
@@ -100,7 +101,7 @@ function Wait-ApiHealth([int]$Seconds) {
     do {
         try {
             $health = Invoke-RestMethod -Uri "http://127.0.0.1:$ApiPort/healthz" -TimeoutSec 2
-            if ($health.status -eq 'ok') { return $true }
+            if ($health.status -eq 'ok' -and $health.instance_id -eq 'default') { return $true }
         }
         catch { }
         Start-Sleep -Seconds 1
@@ -152,7 +153,7 @@ if ($Stage -eq 'ValidateGenerated') {
         $startup = Join-Path $root 'startup-error.log'
         $config = Join-Path $root 'config.json'
         Write-Utf8NoBom $probe "import sys`nsys.stderr.write('INFO: Started server process [12345]\n')`nsys.stderr.flush()`nraise SystemExit(0)`n"
-        Write-Utf8NoBom $config "{}"
+        Write-Utf8NoBom $config '{"instance_id":"default","port":8787}'
         $python = (Get-Command python.exe -ErrorAction Stop).Source
         $probeLiteral = "@('$(Escape-SingleQuoted $probe)')"
         $content = New-ServerScriptContent `
@@ -200,6 +201,8 @@ if ([Environment]::OSVersion.Platform -ne [PlatformID]::Win32NT) {
 $InstallRoot = Get-InstallRoot
 $ConfigFile = Join-Path $InstallRoot 'config.json'
 $Config = Read-JsonConfig $ConfigFile
+if (-not $Config.ContainsKey('port')) { Fail 'application installation did not provide the default instance port' }
+$ApiPort = [int]$Config['port']
 $ManagedDatabase = $Config.ContainsKey('database_managed') -and [bool]$Config['database_managed']
 
 $AppDir = Join-Path $InstallRoot 'app'
@@ -296,23 +299,35 @@ if (-not (Wait-ApiHealth 20)) {
 
 if (-not (Wait-ApiHealth 45)) {
     Show-StartupDiagnostics $InstallRoot
-    Fail 'LightHouse did not become healthy on port 8787 after Scheduled Task and direct-start checks'
+    Fail "LightHouse did not become healthy on port $ApiPort after Scheduled Task and direct-start checks"
 }
 
-& $LhExe migrate | Out-Null
-if ($LASTEXITCODE -ne 0) {
-    Show-StartupDiagnostics $InstallRoot
-    Fail 'database migration failed after the API became healthy'
+$previousConfig = $env:LIGHTHOUSE_CONFIG
+try {
+    $env:LIGHTHOUSE_CONFIG = $ConfigFile
+    & $LhExe migrate | Out-Null
+    if ($LASTEXITCODE -ne 0) {
+        Show-StartupDiagnostics $InstallRoot
+        Fail 'database migration failed after the API became healthy'
+    }
+    & $LhExe doctor
+    if ($LASTEXITCODE -ne 0) {
+        Show-StartupDiagnostics $InstallRoot
+        Fail 'LightHouse doctor reported an installation failure'
+    }
 }
-& $LhExe doctor
-if ($LASTEXITCODE -ne 0) {
-    Show-StartupDiagnostics $InstallRoot
-    Fail 'LightHouse doctor reported an installation failure'
+finally {
+    if ($null -eq $previousConfig) {
+        Remove-Item Env:LIGHTHOUSE_CONFIG -ErrorAction SilentlyContinue
+    }
+    else {
+        $env:LIGHTHOUSE_CONFIG = $previousConfig
+    }
 }
 
 if ($DirectFallback) {
-    Write-Step 'LightHouse recovered through a direct background start; the logon task remains registered for future sessions'
+    Write-Step "LightHouse recovered through a direct background start on port $ApiPort; the logon task remains registered"
 }
 else {
-    Write-Step 'LightHouse background task is healthy'
+    Write-Step "LightHouse default background instance is healthy on port $ApiPort"
 }

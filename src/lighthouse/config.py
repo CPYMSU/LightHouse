@@ -25,6 +25,8 @@ class Settings:
     api_key: str
     host: str = "127.0.0.1"
     port: int = 8787
+    instance_id: str = "default"
+    instance_name: str = "default"
     model_base_url: str = ""
     model_api_key: str = ""
     model: str = ""
@@ -41,14 +43,18 @@ class Settings:
         if not database_url:
             raise RuntimeError("LIGHTHOUSE_DATABASE_URL is required")
         if len(api_key) < 16:
-            raise RuntimeError("LightHouse control credential is missing; run the macOS installer or set LIGHTHOUSE_API_KEY")
+            raise RuntimeError("LightHouse control credential is missing; run the platform installer or set LIGHTHOUSE_API_KEY")
         json_mode_value = os.environ.get("LIGHTHOUSE_MODEL_JSON_MODE") or local.get("model_json_mode") or "1"
         json_mode = str(json_mode_value).strip().lower()
+        instance_id = os.environ.get("LIGHTHOUSE_INSTANCE_ID", "").strip() or str(local.get("instance_id") or "default").strip()
+        instance_name = os.environ.get("LIGHTHOUSE_INSTANCE_NAME", "").strip() or str(local.get("instance_name") or instance_id).strip()
         return cls(
             database_url=database_url,
             api_key=api_key,
             host=os.environ.get("LIGHTHOUSE_HOST", str(local.get("host") or "127.0.0.1")),
             port=int(os.environ.get("LIGHTHOUSE_PORT", str(local.get("port") or "8787"))),
+            instance_id=instance_id or "default",
+            instance_name=instance_name or instance_id or "default",
             model_base_url=os.environ.get("LIGHTHOUSE_MODEL_BASE_URL", "").strip() or str(local.get("model_base_url") or "").strip(),
             model_api_key=model_api_key(),
             model=os.environ.get("LIGHTHOUSE_MODEL", "").strip() or str(local.get("model") or "").strip(),
