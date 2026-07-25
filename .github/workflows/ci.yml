@@ -120,5 +120,29 @@ jobs:
               throw "validation failed for $($case.File): $output"
             }
           }
+      - name: Verify native stderr isolation under ErrorActionPreference Stop
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $fixture = Join-Path $env:RUNNER_TEMP 'native-stderr-fixture.py'
+          $stdout = Join-Path $env:RUNNER_TEMP 'native-stdout.log'
+          $stderr = Join-Path $env:RUNNER_TEMP 'native-stderr.log'
+          @'
+          import sys
+          import time
+          sys.stderr.write("INFO: Started server process [12345]\n")
+          sys.stderr.flush()
+          time.sleep(1)
+          raise SystemExit(0)
+          '@ | Set-Content -LiteralPath $fixture -Encoding UTF8
+          $python = (Get-Command python.exe -ErrorAction Stop).Source
+          $process = Start-Process -FilePath $python -ArgumentList @($fixture) `
+            -NoNewWindow -PassThru -Wait `
+            -RedirectStandardOutput $stdout -RedirectStandardError $stderr
+          if ($process.ExitCode -ne 0) { throw "fixture exit code: $($process.ExitCode)" }
+          $stderrText = Get-Content -LiteralPath $stderr -Raw
+          if ($stderrText -notmatch 'INFO: Started server process') {
+            throw "native stderr was not captured: $stderrText"
+          }
       - name: Run Windows-native contract tests
         run: python -m pytest -q tests/test_windows_support.py tests/test_cli_errors.py
