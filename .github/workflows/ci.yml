@@ -120,6 +120,13 @@ jobs:
               throw "validation failed for $($case.File): $output"
             }
           }
+      - name: Execute generated startup script under PowerShell 5.1
+        shell: powershell
+        run: |
+          $output = (& powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File install-windows-service.ps1 -Stage ValidateGenerated | Out-String).Trim()
+          if ($LASTEXITCODE -ne 0 -or $output -ne 'LightHouse generated startup script OK') {
+            throw "generated startup validation failed: $output"
+          }
       - name: Verify native stderr isolation under ErrorActionPreference Stop
         shell: powershell
         run: |
@@ -145,4 +152,4 @@ jobs:
             throw "native stderr was not captured: $stderrText"
           }
       - name: Run Windows-native contract tests
-        run: python -m pytest -q tests/test_windows_support.py tests/test_cli_errors.py
+        run: python -m pytest -q tests/test_windows_support.py tests/test_cli_errors.py tests/test_windows_generated_startup.py
