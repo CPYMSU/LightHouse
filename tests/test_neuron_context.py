@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+from lighthouse.brain import LightHouseBrain
 from lighthouse.context_intelligence import ContextCompiler
+from lighthouse.neuron_brain import NeuronAwareLightHouseBrain
 from lighthouse.neuron_context import NeuronAwareContextCompiler
 
 
@@ -48,3 +50,19 @@ def test_live_neuron_field_is_injected_after_simple_reflexes(monkeypatch):
     assert bundle["neuron_field"]["available"] is True
     assert bundle["neuron_field"]["dominant_neurons"][0]["neuron_id"] == 2
     assert bundle["snapshot"]["neuron_source"] == "live"
+
+
+def test_main_ai_prompt_treats_neuron_field_as_reflex_evidence(monkeypatch):
+    monkeypatch.setattr(
+        LightHouseBrain,
+        "_system_prompt",
+        lambda self, run: "BASE PROMPT",
+    )
+    brain = object.__new__(NeuronAwareLightHouseBrain)
+
+    prompt = brain._system_prompt(None)
+
+    assert "deterministic reflex evidence" in prompt
+    assert "not decorative emotion text" in prompt
+    assert "not an automatic refusal boundary" in prompt
+    assert prompt.endswith("BASE PROMPT")
