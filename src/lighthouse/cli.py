@@ -12,6 +12,8 @@ from urllib.parse import urlencode, urlsplit
 
 import httpx
 
+from .local_service import recover_local_service
+
 
 def _error_text(value: Any) -> str:
     if isinstance(value, (dict, list)):
@@ -102,8 +104,8 @@ class Client:
         parsed = urlsplit(self.base_url)
         if parsed.scheme not in {"http", "https"} or not parsed.hostname:
             raise CLIError("LIGHTHOUSE_URL is invalid")
-        loopback = parsed.hostname in {"localhost", "127.0.0.1", "::1"}
-        if parsed.scheme == "http" and not loopback:
+        self.loopback = parsed.hostname in {"localhost", "127.0.0.1", "::1"}
+        if parsed.scheme == "http" and not self.loopback:
             raise CLIError("operator credentials require HTTPS except on loopback")
         if len(api_key) < 16:
             raise CLIError("LIGHTHOUSE_API_KEY is missing or too short")
@@ -112,18 +114,34 @@ class Client:
             headers={"Authorization": "Bearer " + api_key},
             timeout=timeout,
             follow_redirects=False,
-            trust_env=not loopback,
+            trust_env=not self.loopback,
         )
 
     def request(self, method: str, path: str, payload: dict[str, Any] | None = None) -> Any:
         method = method.upper()
         try:
             response = self.client.request(method, path, json=payload)
+        except (httpx.ConnectError, httpx.ConnectTimeout) as first_exc:
+            if self.loopback and recover_local_service(self.base_url):
+                try:
+                    response = self.client.request(method, path, json=payload)
+                except httpx.RequestError as retry_exc:
+                    first_exc = retry_exc
+                else:
+                    return self._decode_response(response, method, path)
+            reason = exception_message(first_exc)
+            raise CLIError(
+                f"cannot reach LightHouse at {self.base_url}: {reason}"
+            ) from first_exc
         except httpx.RequestError as exc:
             reason = exception_message(exc)
             raise CLIError(
                 f"cannot reach LightHouse at {self.base_url}: {reason}"
             ) from exc
+        return self._decode_response(response, method, path)
+
+    @staticmethod
+    def _decode_response(response: httpx.Response, method: str, path: str) -> Any:
         try:
             value = response.json()
         except ValueError:
