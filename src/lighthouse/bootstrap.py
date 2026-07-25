@@ -50,6 +50,7 @@ def migration_sql() -> str:
             "0002_memory_runtime.sql",
             "0003_context_intelligence.sql",
             "0004_emergent_neurons.sql",
+            "0005_neuron_trigger_hardening.sql",
         )
     )
 
