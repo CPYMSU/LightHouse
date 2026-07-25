@@ -136,16 +136,40 @@ def test_windows_dpapi_round_trip(tmp_path, monkeypatch):
     assert secrets.keychain_get(service) is None
 
 
-def test_windows_installer_is_strictmode_safe_bootstrap():
+def test_windows_installer_sequences_database_application_and_service():
     script = Path("install-windows.ps1").read_text(encoding="utf-8")
     assert "$MyInvocation.MyCommand.Path" not in script
-    assert "$CoreCommit = 'f2ae0df9d69144218bcc68cb6538cae1755923fe'" in script
     assert "install-windows-database.ps1" in script
-    assert "-Stage Prepare" in script
-    assert "-Stage Finalize" in script
+    assert "install-windows-core.ps1" in script
+    assert "install-windows-service.ps1" in script
+    assert script.index("-Stage Prepare") < script.index("-Stage Install")
+    assert script.index("-Stage Install") < script.index("-Stage Finalize")
     assert "LIGHTHOUSE_BOOTSTRAP_VALIDATE" in script
-    assert "LIGHTHOUSE_INSTALL_FROM_FILE" in script
     assert "powershell.exe" in script
+
+
+def test_windows_application_core_never_starts_service_or_waits_for_health():
+    script = Path("install-windows-core.ps1").read_text(encoding="utf-8")
+    assert "Register-ScheduledTask" not in script
+    assert "Start-ScheduledTask" not in script
+    assert "Wait-ApiHealth" not in script
+    assert "Windows DPAPI" in script
+    assert "Model API key" in script
+    assert "database preparation did not provide database_url" in script
+
+
+def test_windows_service_installer_owns_health_and_diagnostics():
+    script = Path("install-windows-service.ps1").read_text(encoding="utf-8")
+    assert "Register-ScheduledTask" in script
+    assert "Start-ScheduledTask" in script
+    assert "Wait-ApiHealth 20" in script
+    assert "Wait-ApiHealth 45" in script
+    assert "startup-error.log" in script
+    assert "startup-direct-error.log" in script
+    assert "Get-ScheduledTaskInfo" in script
+    assert "Start-Process" in script
+    assert "migrate" in script
+    assert "doctor" in script
 
 
 def test_windows_private_database_bootstrap_never_requests_postgres_password():
