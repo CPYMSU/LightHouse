@@ -6,7 +6,8 @@ import os
 from pathlib import Path
 import sys
 
-from . import terminal
+from . import terminal as base_terminal
+from . import terminal_v2
 from .instances import (
     InstanceError,
     create_instance,
@@ -18,7 +19,10 @@ from .instances import (
 
 
 def _instance_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog="lh new", description="Start another isolated LightHouse API instance")
+    parser = argparse.ArgumentParser(
+        prog="lh new",
+        description="Start another isolated LightHouse API instance",
+    )
     parser.add_argument("name", nargs="?")
     parser.add_argument("--project")
     parser.add_argument("--port", type=int)
@@ -31,13 +35,24 @@ def _activate(config_path: Path) -> None:
 
 
 def _print_instances() -> int:
-    print(json.dumps({"items": [record.public() for record in list_instances()]}, ensure_ascii=False, indent=2, sort_keys=True))
+    print(
+        json.dumps(
+            {"items": [record.public() for record in list_instances()]},
+            ensure_ascii=False,
+            indent=2,
+            sort_keys=True,
+        )
+    )
     return 0
 
 
 def _new(argv: list[str]) -> int:
     args = _instance_parser().parse_args(argv)
-    record = create_instance(args.name, project_path=args.project, preferred_port=args.port)
+    record = create_instance(
+        args.name,
+        project_path=args.project,
+        preferred_port=args.port,
+    )
     print(
         json.dumps(
             {
@@ -54,26 +69,27 @@ def _new(argv: list[str]) -> int:
     _activate(Path(record.config_path))
     if args.project:
         os.chdir(Path(args.project).expanduser().resolve())
-    return terminal.interactive()
+    return terminal_v2.main([])
 
 
 def _attach(name: str, remaining: list[str]) -> int:
     config = instance_config(name, start_if_needed=True)
     _activate(config)
-    if remaining:
-        return terminal.main(remaining)
-    return terminal.interactive()
+    return terminal_v2.main(remaining)
 
 
 def _help() -> int:
-    terminal.help_text()
+    base_terminal.help_text()
     print(
-        """Instance Kernel:\n"
-        "  lh new [NAME] [--project PATH] [--port PORT]   start and attach to another instance\n"
-        "  lh instances                                  list all local instances\n"
-        "  lh attach NAME                                attach to an existing instance\n"
-        "  lh stop NAME                                  stop an instance\n"
-        "  lh --instance NAME [COMMAND]                  run against a named instance\n"
+        """
+Instance Kernel:
+  lh new [NAME] [--project PATH] [--port PORT]   start and attach to another instance
+  lh instances                                  list all local instances
+  lh attach NAME                                attach to an existing instance
+  lh stop NAME                                  stop an instance
+  lh start NAME                                 restart a stopped instance
+  lh --instance NAME [COMMAND]                  run against a named instance
+"""
     )
     return 0
 
@@ -86,7 +102,7 @@ def main(argv: list[str] | None = None) -> int:
                 raise InstanceError("--instance requires an instance name")
             return _attach(argv[1], argv[2:])
         if not argv:
-            return terminal.main([])
+            return terminal_v2.main([])
         first = argv[0]
         if first in {"help", "--help", "-h"}:
             return _help()
@@ -102,17 +118,31 @@ def main(argv: list[str] | None = None) -> int:
             if len(argv) != 2:
                 raise InstanceError(f"{first} requires exactly one instance name")
             record = stop_instance(argv[1])
-            print(json.dumps({"instance": record.public()}, ensure_ascii=False, indent=2, sort_keys=True))
+            print(
+                json.dumps(
+                    {"instance": record.public()},
+                    ensure_ascii=False,
+                    indent=2,
+                    sort_keys=True,
+                )
+            )
             return 0
         if first in {"start", "instance-start"}:
             if len(argv) != 2:
                 raise InstanceError(f"{first} requires exactly one instance name")
             record = start_instance(argv[1])
-            print(json.dumps({"instance": record.public()}, ensure_ascii=False, indent=2, sort_keys=True))
+            print(
+                json.dumps(
+                    {"instance": record.public()},
+                    ensure_ascii=False,
+                    indent=2,
+                    sort_keys=True,
+                )
+            )
             return 0
-        return terminal.main(argv)
+        return terminal_v2.main(argv)
     except InstanceError as exc:
-        terminal.SwissTerminal().error(str(exc))
+        base_terminal.SwissTerminal().error(str(exc))
         return 2
 
 
