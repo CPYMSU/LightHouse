@@ -1,7 +1,7 @@
 # LightHouse Instance Kernel
 
-LightHouse 0.9.0 can run multiple local API instances at the same time without
-splitting the durable Data, Memory or Neuron Kernel.
+LightHouse 1.0.0 can run multiple local API instances at the same time without
+splitting the durable Data, Memory, Neuron, Tool or Mega Project Kernel.
 
 ## Isolation model
 
@@ -15,10 +15,11 @@ Every instance has its own:
 - process lifecycle record.
 
 All instances reuse the installed LightHouse runtime, native secret store and the
-same PostgreSQL database. Receipts, long-term memory, neuron state, workspaces and
-background queues therefore remain one coherent system. PostgreSQL work and
-background jobs use transactional claims, including `FOR UPDATE SKIP LOCKED`, so
-multiple API processes do not execute one queued job twice.
+same PostgreSQL database. Receipts, long-term memory, neuron state, tool knowledge,
+Mega Project findings, Workspaces and background queues therefore remain one
+coherent system. PostgreSQL work and background jobs use transactional claims,
+including `FOR UPDATE SKIP LOCKED`, so multiple API processes do not execute one
+queued job twice.
 
 Instance records live under:
 
@@ -76,6 +77,20 @@ lh --instance research auto on
 lh --instance research "complete the full research workflow"
 ```
 
+## Shared intelligent state
+
+Instances share:
+
+- durable conversations, tasks, locators and Context Snapshots;
+- Agent Registry, Work Orders, leases and background jobs;
+- the Tool Knowledge Registry;
+- Mega Project findings, steps, decisions and checkpoints;
+- 24-neuron state, memories, weights and ABM outcomes;
+- Operations, confirmation state and Receipts.
+
+An instance can therefore continue a project started by another instance without
+copying or fragmenting the operating system's long-term state.
+
 ## Port allocation
 
 The default preferred port is `8787`. Installation and `lh new` scan upward until
@@ -91,6 +106,7 @@ source of truth for the API server, CLI, health checks and diagnostics.
 - Control and model credentials remain in macOS Keychain or Windows DPAPI.
 - Instance configs contain no model API key.
 - Additional instances cannot expand System or Desktop Target roots.
+- Tool recommendations and Mega Project context cannot expand authority.
 - Auto Mode authorization is scoped to one Run and ends at terminal/input state.
 - Stopping one additional instance does not stop PostgreSQL or another instance.
 - Uninstallers stop registered additional processes before removing the runtime.
