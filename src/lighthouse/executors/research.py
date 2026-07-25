@@ -6,7 +6,7 @@ import ipaddress
 import re
 import socket
 from typing import Any
-from urllib.parse import parse_qs, unquote, urlparse
+from urllib.parse import parse_qs, unquote, urljoin, urlparse
 
 import httpx
 
@@ -28,7 +28,7 @@ def _public_url(value: str) -> str:
         raise ValueError("research URL must be public HTTP or HTTPS")
     host = parsed.hostname.strip("[]")
     try:
-        addresses = {item[4][0] for item in socket.getaddrinfo(host, parsed.port or 443)}
+        addresses = {item[4][0] for item in socket.getaddrinfo(host, parsed.port)}
     except OSError as exc:
         raise ValueError(f"research host could not be resolved: {host}") from exc
     for address in addresses:
@@ -70,12 +70,12 @@ class _TextExtractor(HTMLParser):
 
 
 class ResearchExecutor:
-    """Read-only public-web research with bounded responses and SSRF protection."""
+    """Read-only public-web research with bounded responses and redirect SSRF protection."""
 
     def __init__(self, client: httpx.Client | None = None) -> None:
         self.client = client or httpx.Client(
             timeout=httpx.Timeout(20.0, connect=10.0),
-            follow_redirects=True,
+            follow_redirects=False,
             headers={
                 "User-Agent": "LightHouse-Research/1.2 (+https://github.com/CPYMSU/LightHouse)",
                 "Accept": "text/html,application/xhtml+xml,text/plain;q=0.9,*/*;q=0.5",
@@ -94,12 +94,30 @@ class ResearchExecutor:
             return self._open(arguments)
         raise ValueError(f"unsupported research operation: {capability.operation}")
 
+    def _request(self, method: str, url: str, **kwargs: Any) -> httpx.Response:
+        current = _public_url(url)
+        for _ in range(6):
+            response = self.client.request(method, current, **kwargs)
+            if response.status_code not in {301, 302, 303, 307, 308}:
+                _public_url(str(response.url))
+                return response
+            location = str(response.headers.get("location") or "").strip()
+            if not location:
+                return response
+            current = _public_url(urljoin(current, location))
+            if response.status_code == 303:
+                method = "GET"
+                kwargs.pop("data", None)
+                kwargs.pop("json", None)
+        raise RuntimeError("research request exceeded the redirect limit")
+
     def _search(self, arguments: dict[str, Any]) -> ExecutionResult:
         query = str(arguments.get("query") or "").strip()
         if not query:
             raise ValueError("research query is required")
         limit = max(1, min(int(arguments.get("max_results") or 8), 20))
-        response = self.client.post(
+        response = self._request(
+            "POST",
             "https://html.duckduckgo.com/html/",
             data={"q": query},
         )
@@ -149,7 +167,7 @@ class ResearchExecutor:
     def _open(self, arguments: dict[str, Any]) -> ExecutionResult:
         url = _public_url(str(arguments.get("url") or ""))
         max_bytes = max(4_096, min(int(arguments.get("max_bytes") or 120_000), 500_000))
-        response = self.client.get(url)
+        response = self._request("GET", url)
         response.raise_for_status()
         content_type = str(response.headers.get("content-type") or "").lower()
         raw = response.content[:max_bytes]
