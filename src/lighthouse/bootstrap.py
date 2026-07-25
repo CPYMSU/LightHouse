@@ -23,6 +23,7 @@ from .executors import (
 from .extra_capabilities import SYSTEM_TYPED_CAPABILITIES
 from .kernel import OperationKernel
 from .memory_search import PostgresMemoryFabric
+from .neuron_runtime import NeuronReflexWorker, PostgresNeuronRuntime
 from .provider import DisabledProvider, OpenAICompatibleProvider
 from .repository import PostgresRepository
 
@@ -35,6 +36,7 @@ def migration_sql() -> str:
             "0001_core.sql",
             "0002_memory_runtime.sql",
             "0003_context_intelligence.sql",
+            "0004_emergent_neurons.sql",
         )
     )
 
@@ -46,6 +48,7 @@ def build_kernel(settings: Settings, *, migrate: bool = True) -> OperationKernel
     catalog = PostgresDataCatalog(settings.database_url)
     memory = PostgresMemoryFabric(settings.database_url)
     agent_bus = PostgresAgentBus(settings.database_url)
+    neuron_runtime = PostgresNeuronRuntime(settings.database_url)
     agent_bus.register_builtin_agents()
     memory.bind_agent_bus(agent_bus)
     context_compiler = ContextCompiler(memory, agent_bus)
@@ -79,6 +82,7 @@ def build_kernel(settings: Settings, *, migrate: bool = True) -> OperationKernel
     kernel.memory = memory
     kernel.agent_bus = agent_bus
     kernel.context_compiler = context_compiler
+    kernel.neuron_runtime = neuron_runtime
     return kernel
 
 
@@ -100,6 +104,10 @@ def build_brain(settings: Settings, kernel: OperationKernel) -> LightHouseBrain:
     )
     memory = getattr(kernel, "memory", None) or PostgresMemoryFabric(settings.database_url)
     agent_bus = getattr(kernel, "agent_bus", None) or PostgresAgentBus(settings.database_url)
+    neuron_runtime = (
+        getattr(kernel, "neuron_runtime", None)
+        or PostgresNeuronRuntime(settings.database_url)
+    )
     agent_bus.register_builtin_agents()
     memory.bind_agent_bus(agent_bus)
     context_compiler = (
@@ -121,8 +129,12 @@ def build_brain(settings: Settings, kernel: OperationKernel) -> LightHouseBrain:
         provider=provider,
         repository=kernel.repository,
     )
+    neuron_worker = NeuronReflexWorker(neuron_runtime)
     worker.start()
+    neuron_worker.start()
     brain.background_worker = worker
+    brain.neuron_runtime = neuron_runtime
+    brain.neuron_worker = neuron_worker
     return brain
 
 
