@@ -12,7 +12,7 @@ $ProgressPreference = 'SilentlyContinue'
 $RepoUrl = 'https://github.com/CPYMSU/LightHouse.git'
 $ControlService = 'com.cpym.su.lighthouse.control'
 $ModelService = 'com.cpym.su.lighthouse.model'
-$ApiPort = 8787
+$ApiPortStart = 8787
 
 function Write-Step([string]$Message) {
     Write-Host $Message -ForegroundColor Cyan
@@ -60,6 +60,22 @@ function Save-Config([string]$Path, [hashtable]$Config) {
     New-Item -ItemType Directory -Force -Path $parent | Out-Null
     Write-Utf8NoBom $Path (($Config | ConvertTo-Json -Depth 20) + "`n")
     Protect-CurrentUserFile $Path
+}
+
+function Test-TcpListener([int]$Port) {
+    $listener = Get-NetTCPConnection -State Listen -LocalPort $Port -ErrorAction SilentlyContinue | Select-Object -First 1
+    return $null -ne $listener
+}
+
+function Find-FreeApiPort([int]$Start) {
+    if ($Start -lt 1) { $Start = $ApiPortStart }
+    for ($port = $Start; $port -le 65535; $port++) {
+        if (-not (Test-TcpListener $port)) { return $port }
+    }
+    for ($port = 1024; $port -lt $Start; $port++) {
+        if (-not (Test-TcpListener $port)) { return $port }
+    }
+    Fail 'no free local TCP port is available for the default LightHouse instance'
 }
 
 function Test-Python312([string]$Path) {
@@ -166,10 +182,6 @@ New-Item -ItemType Directory -Force -Path $InstallRoot, $BinDir, $LogDir | Out-N
 
 try { Stop-ScheduledTask -TaskName 'LightHouse' -ErrorAction SilentlyContinue } catch { }
 Start-Sleep -Milliseconds 500
-$listener = Get-NetTCPConnection -State Listen -LocalPort $ApiPort -ErrorAction SilentlyContinue | Select-Object -First 1
-if ($listener) {
-    Fail "port $ApiPort is already in use by PID $($listener.OwningProcess); stop the previous LightHouse process and rerun"
-}
 
 Write-Step 'Preparing the LightHouse Windows application runtime'
 $Python = Resolve-Python312
@@ -191,6 +203,11 @@ if (-not $Git) { Fail 'Git did not become available' }
 $Config = Read-JsonConfig $ConfigFile
 if (-not $Config.ContainsKey('database_url') -or -not [string]$Config['database_url']) {
     Fail 'database preparation did not provide database_url'
+}
+$PreferredApiPort = if ($Config.ContainsKey('port')) { [int]$Config['port'] } else { $ApiPortStart }
+$ApiPort = Find-FreeApiPort $PreferredApiPort
+if ($ApiPort -ne $PreferredApiPort) {
+    Write-Step "Port $PreferredApiPort is occupied; assigning the default LightHouse instance to $ApiPort"
 }
 
 Write-Step 'Downloading LightHouse'
@@ -264,7 +281,25 @@ $Config['actor'] = $env:USERNAME
 $Config['host'] = '127.0.0.1'
 $Config['port'] = $ApiPort
 $Config['platform'] = 'windows'
+$Config['instance_id'] = 'default'
+$Config['instance_name'] = 'default'
+$Config['instance_kind'] = 'system'
 Save-Config $ConfigFile $Config
+
+$previousConfig = $env:LIGHTHOUSE_CONFIG
+try {
+    $env:LIGHTHOUSE_CONFIG = $ConfigFile
+    & $VenvPython -c "from lighthouse.instances import ensure_default_instance; ensure_default_instance()"
+    if ($LASTEXITCODE -ne 0) { Fail 'failed to register the default LightHouse instance' }
+}
+finally {
+    if ($null -eq $previousConfig) {
+        Remove-Item Env:LIGHTHOUSE_CONFIG -ErrorAction SilentlyContinue
+    }
+    else {
+        $env:LIGHTHOUSE_CONFIG = $previousConfig
+    }
+}
 
 $cmdContent = "@echo off`r`n`"$LhExe`" %*`r`n"
 Write-Utf8NoBom $LhCmd $cmdContent
@@ -279,4 +314,4 @@ if (-not (($env:Path -split ';') | Where-Object { $_.TrimEnd('\') -ieq $BinDir.T
     $env:Path = "$env:Path;$BinDir"
 }
 
-Write-Step 'LightHouse application runtime installed; starting the background control plane next'
+Write-Step "LightHouse application runtime installed; default instance will start on port $ApiPort"
