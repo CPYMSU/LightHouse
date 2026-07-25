@@ -243,9 +243,21 @@ lh start research
 
 ## Install on macOS
 
+Use the GitHub API entry point so installation does not depend on a working
+`raw.githubusercontent.com` TLS route:
+
 ```bash
-curl -fsSL https://raw.githubusercontent.com/CPYMSU/LightHouse/main/install-macos.sh | bash
+curl --http1.1 --fail --location --silent --show-error \
+  --connect-timeout 20 --retry 5 --retry-delay 2 --retry-all-errors \
+  -H 'Accept: application/vnd.github.raw+json' \
+  'https://api.github.com/repos/CPYMSU/LightHouse/contents/install-macos.sh?ref=main' | bash
 ```
+
+After the first script is received, the installer downloads to a temporary file,
+validates its Bash syntax, and automatically retries both GitHub raw and API hosts.
+It also repairs stale PostgreSQL and LightHouse launchd state. When `lh` later finds
+that its configured loopback API is not listening, it wakes the platform service and
+retries the original request once.
 
 ## Install on Windows PowerShell
 
