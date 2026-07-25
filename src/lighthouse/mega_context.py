@@ -123,6 +123,7 @@ class MegaProjectContextCompiler(NeuronAwareContextCompiler):
                         "integrations": len(massive.get("integrations") or []),
                     },
                     "fixed_workflow": False,
+                    "main_ai_may_investigate_plan_execute_or_revise_freely": True,
                     "main_ai_may_wait_continue_parallelize_or_revise_freely": True,
                     "massive_output_emerges_from_verified_batches": True,
                 }
@@ -131,12 +132,14 @@ class MegaProjectContextCompiler(NeuronAwareContextCompiler):
                     "project": project,
                     "error": str(exc),
                     "fixed_workflow": False,
+                    "main_ai_may_investigate_plan_execute_or_revise_freely": True,
                 }
         else:
             bundle["project_director_brief"] = {
                 "active": False,
                 "creation_is_optional": True,
                 "main_ai_decides": True,
+                "main_ai_may_investigate_plan_execute_or_revise_freely": True,
                 "massive_build_tools_available": self.massive_build is not None,
             }
 
