@@ -6,28 +6,40 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
 
-# The public installer is intentionally a tiny PowerShell 5.1-safe bootstrap.
-# Invoke-Expression does not guarantee that $MyInvocation.MyCommand exposes a
-# Path property under StrictMode, so this entry point never reads that property.
+# The public entry point stays tiny and PowerShell 5.1-safe. It prepares a
+# private PostgreSQL control plane before running the validated 0.7 installer,
+# so an existing postgres administrator password is never required.
 $CoreCommit = 'f2ae0df9d69144218bcc68cb6538cae1755923fe'
 $CoreUrl = "https://raw.githubusercontent.com/CPYMSU/LightHouse/$CoreCommit/install-windows.ps1"
+$DatabaseHelperUrl = 'https://raw.githubusercontent.com/CPYMSU/LightHouse/main/install-windows-database.ps1'
 
 if ($env:LIGHTHOUSE_BOOTSTRAP_VALIDATE -eq '1') {
     Write-Output 'LightHouse Windows bootstrap OK'
     return
 }
 
-$bootstrap = Join-Path $env:TEMP ("lighthouse-install-{0}.ps1" -f ([guid]::NewGuid().ToString('N')))
+$coreFile = Join-Path $env:TEMP ("lighthouse-install-core-{0}.ps1" -f ([guid]::NewGuid().ToString('N')))
+$databaseFile = Join-Path $env:TEMP ("lighthouse-install-database-{0}.ps1" -f ([guid]::NewGuid().ToString('N')))
 $previousInstallFromFile = $env:LIGHTHOUSE_INSTALL_FROM_FILE
 
 try {
-    Invoke-WebRequest -UseBasicParsing -Uri $CoreUrl -OutFile $bootstrap
-    $env:LIGHTHOUSE_INSTALL_FROM_FILE = '1'
+    Invoke-WebRequest -UseBasicParsing -Uri $DatabaseHelperUrl -OutFile $databaseFile
+    Invoke-WebRequest -UseBasicParsing -Uri $CoreUrl -OutFile $coreFile
 
-    & powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File $bootstrap
-    $exitCode = $LASTEXITCODE
-    if ($exitCode -ne 0) {
-        throw "LightHouse installer exited with code $exitCode"
+    & powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File $databaseFile -Stage Prepare
+    if ($LASTEXITCODE -ne 0) {
+        throw "LightHouse private database preparation exited with code $LASTEXITCODE"
+    }
+
+    $env:LIGHTHOUSE_INSTALL_FROM_FILE = '1'
+    & powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File $coreFile
+    if ($LASTEXITCODE -ne 0) {
+        throw "LightHouse installer exited with code $LASTEXITCODE"
+    }
+
+    & powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File $databaseFile -Stage Finalize
+    if ($LASTEXITCODE -ne 0) {
+        throw "LightHouse private database finalization exited with code $LASTEXITCODE"
     }
 }
 finally {
@@ -37,5 +49,5 @@ finally {
     else {
         $env:LIGHTHOUSE_INSTALL_FROM_FILE = $previousInstallFromFile
     }
-    Remove-Item -LiteralPath $bootstrap -Force -ErrorAction SilentlyContinue
+    Remove-Item -LiteralPath $coreFile, $databaseFile -Force -ErrorAction SilentlyContinue
 }
