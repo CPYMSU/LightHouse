@@ -1,101 +1,134 @@
-# LightHouse Memory Fabric 0.7
+# LightHouse Memory Fabric 0.8
 
 ## Purpose
 
-Memory Fabric makes file, task, conversation and locator state durable across
-runs, terminal restarts and conversations. It does not replace the filesystem.
-Files remain the source of truth; PostgreSQL stores bounded searchable metadata,
-relationships, history and successful execution coordinates.
+Memory Fabric preserves the world state that the main AI needs across runs,
+terminal restarts and conversations. It does not replace files, PostgreSQL,
+Operations or Receipts. Those remain the sources of truth.
+
+The 0.8 contract is:
 
 ```text
-User message
-  -> Conversation + active task
-  -> Memory Resolver
-  -> exact active subject / relevant files / recent locators
-  -> LightHouse Brain
-  -> Address Resolver
-  -> immutable Operation
+Raw events
+  -> hidden Memory Steward
+  -> facts, complete turns, summaries, entities and relations
+  -> cached Context Snapshot
+  -> main AI judgment
+  -> direct capability or Agent Bus
+  -> thin Operation Kernel
   -> Receipt
-  -> Memory projection
+  -> world-state projection
 ```
+
+Context guides intelligence. It does not silently choose a file, rewrite a model
+argument or replace the main AI's semantic judgment.
 
 ## Persistent memory
 
-- `lh_conversations` — one durable conversation per Workspace and actor;
-- `lh_messages` — complete user and assistant messages;
-- `lh_memory_tasks` — active/completed goals and their subject locator;
-- `lh_locators` — canonical file, directory, URL and application addresses;
-- `lh_files` — file metadata, hashes and bounded searchable text;
-- `lh_file_revisions` — content hashes tied to successful runs and Operations;
-- `lh_run_conversations` — the run-to-conversation bridge;
-- `lh_memory_projections` — idempotent Receipt/message projection ledger.
+Core durable tables include:
 
-## Automatic file index
+- `lh_conversations` — one conversation per Workspace and actor;
+- `lh_messages` — complete user, assistant and system messages;
+- `lh_memory_tasks` — active and completed goals;
+- `lh_locators` — canonical file, directory, URL, application and data locators;
+- `lh_files` — bounded searchable file metadata and text;
+- `lh_file_revisions` — hashes tied to successful Operations;
+- `lh_conversation_summaries` — older-context distillation;
+- `lh_context_snapshots` — precompiled main-AI decision bundles;
+- `lh_world_entities`, `lh_world_facts` and `lh_world_relations` — observed world state;
+- `lh_world_inferences` and `lh_world_uncertainties` — semantic conclusions kept separate from facts;
+- `lh_memory_projections` — idempotent event projection ledger.
 
-The terminal performs an initial bounded scan of the System Target's explicit
-`allowed_roots`. It skips common dependency, cache, VCS and macOS Library trees.
-Text files up to 1 MB contribute bounded searchable text; larger or binary files
-store metadata and hashes only. Successful file Operations refresh the relevant
-entry immediately. `/reindex` performs an explicit refresh.
+## Complete recent turns
 
-The index never expands authority. It only covers paths already allowed by the
-System Target.
+Every main-AI decision receives the latest eight complete conversation turns in
+original form. A turn begins with a user message and includes the assistant and
+system messages that followed it.
 
-## Address grounding
+Older messages are not discarded. Memory Steward distills them in the background
+into a summary, entities, relations, inferences and unresolved questions. Relevant
+files and locators are independently retrieved from the current request.
 
-The model may select a capability but does not own execution coordinates.
-Before dispatch, `ExecutionAddressResolver` compares proposed `cwd` and `path`
-values against:
-
-1. the bound Workspace root;
-2. the current task's active subject;
-3. indexed files and directories;
-4. recent canonical locators;
-5. successful Receipt paths.
-
-An absolute `cwd` that was not observed through those sources is rejected before
-an Operation is created. A remembered file name such as `index.html` is resolved
-to the canonical active file. New paths must be relative to the Workspace and use
-typed capabilities.
-
-## Typed directory creation
-
-`mkdir` is not accepted through `system.shell.exec.v1`. Directory creation uses:
+The main AI therefore receives:
 
 ```text
-system.directory.create.v1
+current request
++ latest 8 complete turns
++ older distilled summary
++ active task
++ candidate entities
++ verified facts
++ inferences and uncertainties
++ recent Receipts
++ available Agents and Work Orders
 ```
 
-The path is a safe relative path under the bound Workspace root and receives its
-own frozen Operation and Receipt.
+## Distillation levels
 
-## Confirmation recovery
+Context can improve without blocking the foreground:
 
-`confirm-deferred` claims the frozen Operation and immediately persists it as
-`RUNNING`, then executes it in a worker. The terminal polls the durable Operation
-until a Receipt exists. This separates:
+- Level 0 — raw durable messages and events;
+- Level 1 — deterministic turns, task state, Receipt and file projections;
+- Level 2 — model-assisted summary, entity relations, inferences and uncertainties;
+- later levels may add better specialist models, cross-source reconciliation and
+  long-horizon task compression without changing the foreground protocol.
 
-```text
-EXECUTE / WAIT FOR OPERATION RECEIPT
-BRAIN / CONTINUE FROM RECEIPT
-```
+Every snapshot records its `source_cursor`, `distillation_level`, creation time
+and evidence sources. A lower-level snapshot remains usable while a higher-level
+background job is pending.
 
-A terminal disconnect or HTTP timeout cannot erase the execution truth. The run
-can be resumed from PostgreSQL.
+## Context Snapshot cache
 
-## Conversation behavior
+`ContextCompiler` hashes the current request and the latest message, task, file,
+summary and Work Order cursors. If none changed, the main AI reuses the existing
+`lh_context_snapshots` payload instead of rebuilding memory on every reasoning
+step.
 
-The terminal reuses the current conversation ID automatically. `/new` starts a
-new conversation while retaining long-term indexed memory. Follow-up phrases such
-as "continue", "the page from before", "this file" or "make it richer" are
-resolved from the active task and locator before the Brain asks for a path.
+A new message, task update, file projection, specialist result or upgraded
+summary changes the source cursor and naturally produces a new snapshot.
 
-A new unrelated task does not inherit the previous subject automatically. Subject
-inheritance is limited to clearly referential follow-ups.
+## Background Memory Steward
 
-## UI contract
+Workspace scanning, file indexing and conversation distillation run through
+`lh_background_jobs`. Jobs use PostgreSQL leases and `FOR UPDATE SKIP LOCKED`.
+Repeated work for the same subject is coalesced, so rapid changes to one file
+produce one latest-state indexing job rather than a queue of obsolete versions.
 
-Timeline rows may summarize content. The final green result card and amber input
-card are authoritative text and must never truncate a single long logical line.
-Rich global `soft_wrap` is disabled; card text explicitly folds to the terminal
-width.
+Memory Steward is hidden, low priority and read/index oriented. It never modifies
+user files, controls the Desktop or writes business data. While a foreground main
+AI run is actively reasoning, optional memory jobs yield model and I/O capacity.
+Waiting for user input or a confirmation card does not stop background upkeep.
+
+`/reindex` schedules a background Workspace scan and returns immediately.
+
+## Address contract
+
+The main AI owns semantic target selection. It may use recent turns, active tasks,
+file candidates, Reality Agents or direct inspection to decide which file or
+directory the user means.
+
+The final address layer does not perform semantic substitution. It only validates:
+
+- the chosen path is real when the capability requires an existing object;
+- the path type matches the operation;
+- the path remains inside the bound `allowed_roots`;
+- relative paths do not traverse through `..`;
+- symbolic-link and parent-directory constraints are satisfied.
+
+A real directory inside the Workspace is not rejected merely because it has not
+yet been indexed. An invented path is rejected and returned to the main AI as
+reality feedback; it is never silently replaced with the previous active file.
+
+## Receipts and freshness
+
+Files and policy observations may become stale, so Reality Agents attach observed
+time, evidence and volatility. The Operation Kernel repeats the minimum atomic
+checks at execution time. Receipts and committed transaction outcomes are durable
+facts and do not expire.
+
+## Conversation controls
+
+The terminal reuses the current conversation automatically. `/new` starts a new
+conversation while retaining long-term indexed memory. No keyword list determines
+whether a request is a continuation. The main AI judges that relationship from
+complete recent turns and distilled task context.

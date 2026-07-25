@@ -3,13 +3,23 @@ from __future__ import annotations
 from importlib.resources import files
 
 from .agent_adapter import AgentRepositoryAdapter
+from .agent_bus import PostgresAgentBus
+from .agent_capabilities import AGENT_BUS_CAPABILITIES
 from .agent_store import PostgresAgentStore
+from .background_intelligence import BackgroundIntelligenceWorker
 from .brain import LightHouseBrain
 from .capabilities import CapabilityRegistry, DEFAULT_CAPABILITIES
 from .config import Settings
+from .context_intelligence import ContextCompiler
 from .data_capabilities import DATA_KERNEL_CAPABILITIES
 from .data_kernel import DataTargetResolver, PostgresDataCatalog
-from .executors import DesktopExecutor, PostgresExecutor, ProjectFileExecutor, SystemExecutor
+from .executors import (
+    AgentBusExecutor,
+    DesktopExecutor,
+    PostgresExecutor,
+    ProjectFileExecutor,
+    SystemExecutor,
+)
 from .extra_capabilities import SYSTEM_TYPED_CAPABILITIES
 from .kernel import OperationKernel
 from .memory_search import PostgresMemoryFabric
@@ -19,7 +29,14 @@ from .repository import PostgresRepository
 
 def migration_sql() -> str:
     root = files("lighthouse.sql")
-    return "\n".join(root.joinpath(name).read_text(encoding="utf-8") for name in ("0001_core.sql", "0002_memory_runtime.sql"))
+    return "\n".join(
+        root.joinpath(name).read_text(encoding="utf-8")
+        for name in (
+            "0001_core.sql",
+            "0002_memory_runtime.sql",
+            "0003_context_intelligence.sql",
+        )
+    )
 
 
 def build_kernel(settings: Settings, *, migrate: bool = True) -> OperationKernel:
@@ -27,18 +44,86 @@ def build_kernel(settings: Settings, *, migrate: bool = True) -> OperationKernel
     if migrate:
         repository.migrate(migration_sql())
     catalog = PostgresDataCatalog(settings.database_url)
-    registry = CapabilityRegistry((*DEFAULT_CAPABILITIES, *SYSTEM_TYPED_CAPABILITIES, *DATA_KERNEL_CAPABILITIES))
-    return OperationKernel(repository, registry, {"postgres": PostgresExecutor(catalog), "system": SystemExecutor(), "project_file": ProjectFileExecutor(), "desktop": DesktopExecutor()}, target_resolver=DataTargetResolver(catalog), data_catalog=catalog)
+    memory = PostgresMemoryFabric(settings.database_url)
+    agent_bus = PostgresAgentBus(settings.database_url)
+    agent_bus.register_builtin_agents()
+    memory.bind_agent_bus(agent_bus)
+    context_compiler = ContextCompiler(memory, agent_bus)
+    registry = CapabilityRegistry(
+        (
+            *DEFAULT_CAPABILITIES,
+            *SYSTEM_TYPED_CAPABILITIES,
+            *DATA_KERNEL_CAPABILITIES,
+            *AGENT_BUS_CAPABILITIES,
+        )
+    )
+    agent_bus_executor = AgentBusExecutor(
+        agent_bus=agent_bus,
+        context_compiler=context_compiler,
+        repository=repository,
+        registry=registry,
+    )
+    kernel = OperationKernel(
+        repository,
+        registry,
+        {
+            "postgres": PostgresExecutor(catalog),
+            "system": SystemExecutor(),
+            "project_file": ProjectFileExecutor(),
+            "desktop": DesktopExecutor(),
+            "agent_bus": agent_bus_executor,
+        },
+        target_resolver=DataTargetResolver(catalog),
+        data_catalog=catalog,
+    )
+    kernel.memory = memory
+    kernel.agent_bus = agent_bus
+    kernel.context_compiler = context_compiler
+    return kernel
 
 
 def build_brain(settings: Settings, kernel: OperationKernel) -> LightHouseBrain:
     if settings.model and settings.model_base_url and settings.model_api_key:
-        provider = OpenAICompatibleProvider(base_url=settings.model_base_url, api_key=settings.model_api_key, model=settings.model, timeout=settings.model_timeout, json_mode=settings.model_json_mode, max_state_chars=settings.model_max_state_chars)
+        provider = OpenAICompatibleProvider(
+            base_url=settings.model_base_url,
+            api_key=settings.model_api_key,
+            model=settings.model,
+            timeout=settings.model_timeout,
+            json_mode=settings.model_json_mode,
+            max_state_chars=settings.model_max_state_chars,
+        )
     else:
         provider = DisabledProvider()
-    state_repository = AgentRepositoryAdapter(PostgresAgentStore(settings.database_url), kernel.repository)
-    memory = PostgresMemoryFabric(settings.database_url)
-    return LightHouseBrain(state_repository, kernel, provider, memory=memory)
+    state_repository = AgentRepositoryAdapter(
+        PostgresAgentStore(settings.database_url),
+        kernel.repository,
+    )
+    memory = getattr(kernel, "memory", None) or PostgresMemoryFabric(settings.database_url)
+    agent_bus = getattr(kernel, "agent_bus", None) or PostgresAgentBus(settings.database_url)
+    agent_bus.register_builtin_agents()
+    memory.bind_agent_bus(agent_bus)
+    context_compiler = (
+        getattr(kernel, "context_compiler", None)
+        or ContextCompiler(memory, agent_bus)
+    )
+    brain = LightHouseBrain(
+        state_repository,
+        kernel,
+        provider,
+        memory=memory,
+        agent_bus=agent_bus,
+        context_compiler=context_compiler,
+    )
+    worker = BackgroundIntelligenceWorker(
+        agent_bus=agent_bus,
+        memory=memory,
+        context_compiler=context_compiler,
+        provider=provider,
+        repository=kernel.repository,
+    )
+    worker.start()
+    brain.background_worker = worker
+    return brain
 
 
 build_agent_runtime = build_brain
