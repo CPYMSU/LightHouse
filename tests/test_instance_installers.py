@@ -28,9 +28,11 @@ def test_windows_service_uses_the_configured_port_everywhere():
     assert "$env:LIGHTHOUSE_INSTANCE_ID = 'default'" in script
 
 
-def test_console_entrypoint_wraps_terminal_v2_without_replacing_it():
+def test_console_entrypoint_wraps_the_existing_terminal_entry():
     project = Path("pyproject.toml").read_text(encoding="utf-8")
-    entrypoint = Path("src/lighthouse/entrypoint.py").read_text(encoding="utf-8")
-    assert 'lh = "lighthouse.entrypoint:main"' in project
-    assert "from . import terminal_v2" in entrypoint
-    assert "return terminal_v2.main(argv)" in entrypoint
+    instance_entry = Path("src/lighthouse/instance_entry.py").read_text(encoding="utf-8")
+    terminal_entry = Path("src/lighthouse/terminal_entry.py").read_text(encoding="utf-8")
+    assert 'lh = "lighthouse.instance_entry:main"' in project
+    assert "from . import terminal_entry" in instance_entry
+    assert "return terminal_entry.main(argv)" in instance_entry
+    assert "from . import terminal_v2" in terminal_entry
