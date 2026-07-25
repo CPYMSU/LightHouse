@@ -64,6 +64,7 @@ def migration_sql() -> str:
             "0005_neuron_trigger_hardening.sql",
             "0006_tool_registry_mega_projects.sql",
             "0007_agent_observatory_massive_build.sql",
+            "0008_operation_event_sequence.sql",
         )
     )
 
