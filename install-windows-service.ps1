@@ -1,7 +1,7 @@
 #requires -Version 5.1
 [CmdletBinding()]
 param(
-    [ValidateSet('Finalize', 'Validate')]
+    [ValidateSet('Finalize', 'Validate', 'ValidateGenerated')]
     [string]$Stage = 'Finalize'
 )
 
@@ -53,6 +53,48 @@ function Protect-CurrentUserFile([string]$Path) {
     & icacls.exe $Path /inheritance:r /grant:r "${identity}:(F)" | Out-Null
 }
 
+function Escape-SingleQuoted([string]$Value) {
+    return $Value.Replace("'", "''")
+}
+
+function New-ServerScriptContent(
+    [string]$PythonPath,
+    [string]$ApiArgumentsLiteral,
+    [string]$WorkingDirectory,
+    [string]$ConfigPath,
+    [string]$StdoutPath,
+    [string]$StderrPath,
+    [string]$StartupPath,
+    [string]$DatabasePrelude = ''
+) {
+    $escapedPython = Escape-SingleQuoted $PythonPath
+    $escapedWorking = Escape-SingleQuoted $WorkingDirectory
+    $escapedConfig = Escape-SingleQuoted $ConfigPath
+    $escapedStdout = Escape-SingleQuoted $StdoutPath
+    $escapedStderr = Escape-SingleQuoted $StderrPath
+    $escapedStartup = Escape-SingleQuoted $StartupPath
+
+    return @"
+`$ErrorActionPreference = 'Stop'
+`$env:PYTHONUTF8 = '1'
+`$env:LIGHTHOUSE_CONFIG = '$escapedConfig'
+try {
+    "`$(Get-Date -Format o) START" | Add-Content -LiteralPath '$escapedStartup' -Encoding UTF8
+$DatabasePrelude
+    Set-Location -LiteralPath '$escapedWorking'
+    "`$(Get-Date -Format o) STARTING API" | Add-Content -LiteralPath '$escapedStartup' -Encoding UTF8
+    `$apiProcess = Start-Process -FilePath '$escapedPython' -ArgumentList $ApiArgumentsLiteral -WorkingDirectory '$escapedWorking' -NoNewWindow -PassThru -Wait -RedirectStandardOutput '$escapedStdout' -RedirectStandardError '$escapedStderr'
+    `$exitCode = `$apiProcess.ExitCode
+    "`$(Get-Date -Format o) API EXIT `$exitCode" | Add-Content -LiteralPath '$escapedStartup' -Encoding UTF8
+    exit `$exitCode
+}
+catch {
+    "`$(Get-Date -Format o) STARTUP ERROR`n`$(`$_ | Out-String)" | Add-Content -LiteralPath '$escapedStartup' -Encoding UTF8
+    exit 1
+}
+"@
+}
+
 function Wait-ApiHealth([int]$Seconds) {
     $deadline = (Get-Date).AddSeconds($Seconds)
     do {
@@ -96,6 +138,61 @@ if ($Stage -eq 'Validate') {
     return
 }
 
+if ($Stage -eq 'ValidateGenerated') {
+    if ([Environment]::OSVersion.Platform -ne [PlatformID]::Win32NT) {
+        Fail 'generated startup validation supports Windows only'
+    }
+    $root = Join-Path $env:TEMP ("lighthouse-generated-startup-{0}" -f ([guid]::NewGuid().ToString('N')))
+    New-Item -ItemType Directory -Force -Path $root | Out-Null
+    try {
+        $probe = Join-Path $root 'probe.py'
+        $generated = Join-Path $root 'start-server.ps1'
+        $stdout = Join-Path $root 'server.log'
+        $stderr = Join-Path $root 'server-error.log'
+        $startup = Join-Path $root 'startup-error.log'
+        $config = Join-Path $root 'config.json'
+        Write-Utf8NoBom $probe "import sys`nsys.stderr.write('INFO: Started server process [12345]\n')`nsys.stderr.flush()`nraise SystemExit(0)`n"
+        Write-Utf8NoBom $config "{}"
+        $python = (Get-Command python.exe -ErrorAction Stop).Source
+        $probeLiteral = "@('$(Escape-SingleQuoted $probe)')"
+        $content = New-ServerScriptContent `
+            -PythonPath $python `
+            -ApiArgumentsLiteral $probeLiteral `
+            -WorkingDirectory $root `
+            -ConfigPath $config `
+            -StdoutPath $stdout `
+            -StderrPath $stderr `
+            -StartupPath $startup
+        Write-Utf8NoBom $generated $content
+
+        $tokens = $null
+        $parseErrors = $null
+        [void][System.Management.Automation.Language.Parser]::ParseFile(
+            $generated,
+            [ref]$tokens,
+            [ref]$parseErrors
+        )
+        if (@($parseErrors).Count) {
+            Fail ("generated startup script parse failed: " + ($parseErrors | Format-List | Out-String))
+        }
+
+        & powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File $generated
+        if ($LASTEXITCODE -ne 0) {
+            $startupText = if (Test-Path $startup) { Get-Content $startup -Raw } else { '' }
+            Fail "generated startup script exited with code $LASTEXITCODE`n$startupText"
+        }
+        $stderrText = Get-Content -LiteralPath $stderr -Raw
+        if ($stderrText -notmatch 'INFO: Started server process') {
+            Fail "generated startup script did not capture native stderr: $stderrText"
+        }
+        Write-Output 'LightHouse generated startup script OK'
+    }
+    finally {
+        Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction SilentlyContinue
+    }
+    return
+}
+
 if ([Environment]::OSVersion.Platform -ne [PlatformID]::Win32NT) {
     Fail 'this installer supports Windows only'
 }
@@ -120,13 +217,6 @@ foreach ($path in @($AppDir, $VenvPython, $LhExe, $ConfigFile)) {
     if (-not (Test-Path -LiteralPath $path)) { Fail "runtime path is missing: $path" }
 }
 
-$escapedApp = $AppDir.Replace("'", "''")
-$escapedPython = $VenvPython.Replace("'", "''")
-$escapedConfig = $ConfigFile.Replace("'", "''")
-$escapedServerLog = $ServerLog.Replace("'", "''")
-$escapedServerErrorLog = $ServerErrorLog.Replace("'", "''")
-$escapedStartupLog = $StartupLog.Replace("'", "''")
-
 $databasePrelude = ''
 if ($ManagedDatabase) {
     $PostgresBin = [string]$Config['postgres_bin']
@@ -137,47 +227,32 @@ if ($ManagedDatabase) {
     foreach ($path in @($PgCtl, (Join-Path $DataDir 'PG_VERSION'))) {
         if (-not (Test-Path -LiteralPath $path)) { Fail "managed database runtime path is missing: $path" }
     }
-    $escapedPgCtl = $PgCtl.Replace("'", "''")
-    $escapedData = $DataDir.Replace("'", "''")
-    $escapedPgLog = $PostgresLog.Replace("'", "''")
+    $escapedPgCtl = Escape-SingleQuoted $PgCtl
+    $escapedData = Escape-SingleQuoted $DataDir
+    $escapedPgLog = Escape-SingleQuoted $PostgresLog
     $databasePrelude = @"
+    `$nativePreference = `$ErrorActionPreference
+    `$ErrorActionPreference = 'Continue'
     & '$escapedPgCtl' status -D '$escapedData' *> `$null
-    if (`$LASTEXITCODE -ne 0) {
-        & '$escapedPgCtl' start -D '$escapedData' -l '$escapedPgLog' -o '-h 127.0.0.1 -p $DatabasePort' -w
-        if (`$LASTEXITCODE -ne 0) { throw 'failed to start the private LightHouse PostgreSQL cluster' }
+    `$databaseStatus = `$LASTEXITCODE
+    if (`$databaseStatus -ne 0) {
+        & '$escapedPgCtl' start -D '$escapedData' -l '$escapedPgLog' -o '-h 127.0.0.1 -p $DatabasePort' -w *> `$null
+        `$databaseStatus = `$LASTEXITCODE
     }
+    `$ErrorActionPreference = `$nativePreference
+    if (`$databaseStatus -ne 0) { throw 'failed to start the private LightHouse PostgreSQL cluster' }
 "@
 }
 
-# Windows PowerShell 5.1 converts native stderr into NativeCommandError records.
-# Uvicorn writes ordinary INFO lifecycle messages to stderr, so invoking Python
-# with `& ... *>>` under ErrorActionPreference=Stop incorrectly kills a healthy
-# server. Start-Process keeps stdout/stderr as byte streams and lets the wrapper
-# judge the real child exit code instead.
-$serverContent = @"
-`$ErrorActionPreference = 'Stop'
-`$env:PYTHONUTF8 = '1'
-`$env:LIGHTHOUSE_CONFIG = '$escapedConfig'
-try {
-    "`$(Get-Date -Format o) START" | Add-Content -LiteralPath '$escapedStartupLog' -Encoding UTF8
-$databasePrelude
-    Set-Location -LiteralPath '$escapedApp'
-    "`$(Get-Date -Format o) STARTING API" | Add-Content -LiteralPath '$escapedStartupLog' -Encoding UTF8
-    `$apiProcess = Start-Process -FilePath '$escapedPython' `
-        -ArgumentList @('-m', 'lighthouse.server') `
-        -WorkingDirectory '$escapedApp' `
-        -NoNewWindow -PassThru -Wait `
-        -RedirectStandardOutput '$escapedServerLog' `
-        -RedirectStandardError '$escapedServerErrorLog'
-    `$exitCode = `$apiProcess.ExitCode
-    "`$(Get-Date -Format o) API EXIT `$exitCode" | Add-Content -LiteralPath '$escapedStartupLog' -Encoding UTF8
-    exit `$exitCode
-}
-catch {
-    "`$(Get-Date -Format o) STARTUP ERROR`n`$(`$_ | Out-String)" | Add-Content -LiteralPath '$escapedStartupLog' -Encoding UTF8
-    exit 1
-}
-"@
+$serverContent = New-ServerScriptContent `
+    -PythonPath $VenvPython `
+    -ApiArgumentsLiteral "@('-m', 'lighthouse.server')" `
+    -WorkingDirectory $AppDir `
+    -ConfigPath $ConfigFile `
+    -StdoutPath $ServerLog `
+    -StderrPath $ServerErrorLog `
+    -StartupPath $StartupLog `
+    -DatabasePrelude $databasePrelude
 Write-Utf8NoBom $ServerScript $serverContent
 Protect-CurrentUserFile $ServerScript
 
@@ -206,9 +281,16 @@ if (-not (Wait-ApiHealth 20)) {
         $DirectFallback = $true
         Write-Step 'Scheduled Task did not remain running; starting one direct background recovery process'
         Remove-Item -LiteralPath $DirectError -Force -ErrorAction SilentlyContinue
-        Start-Process -FilePath $PowerShellExe -WindowStyle Hidden `
-            -ArgumentList @('-NoLogo', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', $ServerScript) `
-            -RedirectStandardError $DirectError | Out-Null
+        $fallbackArguments = @(
+            '-NoLogo',
+            '-NoProfile',
+            '-NonInteractive',
+            '-ExecutionPolicy',
+            'Bypass',
+            '-File',
+            $ServerScript
+        )
+        Start-Process -FilePath $PowerShellExe -WindowStyle Hidden -ArgumentList $fallbackArguments -RedirectStandardError $DirectError | Out-Null
     }
 }
 
