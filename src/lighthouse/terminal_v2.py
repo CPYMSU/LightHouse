@@ -18,9 +18,7 @@ def _scan_memory(
     force: bool = False,
 ) -> dict[str, Any] | None:
     workspace = str(config.get("workspace") or "")
-    if not workspace or (
-        not force and config.get("memory_scanned_workspace") == workspace
-    ):
+    if not workspace or (not force and config.get("memory_scanned_workspace") == workspace):
         return None
     try:
         with ui.busy("MEMORY / SCHEDULE BACKGROUND DISTILLATION"):
@@ -36,20 +34,16 @@ def _scan_memory(
                 job = result.get("job") if isinstance(result.get("job"), dict) else {}
                 ui.notice(
                     "MEMORY STEWARD",
-                    (
-                        "The authorized Workspace scan was queued in the background."
-                        + (f"\nJob {job.get('id')}" if job.get("id") else "")
-                    ),
+                    "The authorized Workspace scan was queued in the background."
+                    + (f"\nJob {job.get('id')}" if job.get("id") else ""),
                     tone="green",
                 )
             else:
                 ui.notice(
                     "MEMORY INDEX",
-                    (
-                        f"Indexed {result.get('indexed', 0)} files and "
-                        f"{result.get('directories_indexed', 0)} directories; "
-                        f"skipped {result.get('skipped', 0)}."
-                    ),
+                    f"Indexed {result.get('indexed', 0)} files and "
+                    f"{result.get('directories_indexed', 0)} directories; "
+                    f"skipped {result.get('skipped', 0)}.",
                     tone="green",
                 )
         return result
@@ -94,6 +88,7 @@ def _drive_run(
     *,
     actor: str,
     ui: SwissTerminal,
+    auto_mode_available: bool = False,
 ) -> dict[str, Any]:
     seen: set[tuple[Any, ...]] = set()
     while True:
@@ -108,10 +103,8 @@ def _drive_run(
             if latest_status in {"created", "running"}:
                 ui.notice(
                     "BRAIN CONTINUES",
-                    (
-                        f"Run {run_id} is still active and remains recoverable. "
-                        "Its state is durable even if this terminal closes."
-                    ),
+                    f"Run {run_id} is still active and remains recoverable. "
+                    "Its state is durable even if this terminal closes.",
                     tone="amber",
                 )
                 return snapshot
@@ -119,16 +112,37 @@ def _drive_run(
         if status == "awaiting_confirmation":
             pending = snapshot.get("pending_operation") or {}
             ui.confirmation(pending)
-            if not ui.confirm():
+            chooser = getattr(ui, "permission_choice", None)
+            if callable(chooser):
+                choice = chooser(auto_available=auto_mode_available)
+            else:
+                choice = "once" if ui.confirm() else "deny"
+            if choice == "deny":
                 ui.notice(
                     "PAUSED",
-                    "The frozen operation remains pending. Resume it later with its run ID.",
+                    "The frozen operation remains pending. Resume it later with its Run ID.",
                     tone="amber",
                 )
                 return snapshot
-            operation_id = str(
-                ((pending.get("operation") or {}).get("id")) or ""
-            )
+            operation_id = str(((pending.get("operation") or {}).get("id")) or "")
+            if choice == "auto":
+                try:
+                    snapshot = client.request(
+                        "POST",
+                        f"/v1/agent/runs/{run_id}/auto-authorize",
+                        {"actor": actor},
+                    )
+                    ui.notice(
+                        "AUTO MODE / RUN SCOPED",
+                        "This Run may auto-confirm compatible operations inside the displayed target and roots. Scope expansion asks again.",
+                        tone="green",
+                    )
+                except Exception as exc:
+                    ui.notice(
+                        "AUTO MODE",
+                        f"Run scope could not be granted; this operation will be allowed once: {exc}",
+                        tone="amber",
+                    )
             try:
                 client.request(
                     "POST",
@@ -139,16 +153,12 @@ def _drive_run(
                 pass
             with ui.busy("EXECUTE / WAIT FOR OPERATION RECEIPT"):
                 operation_snapshot = base._await_operation(client, operation_id)
-            operation_status = str(
-                (operation_snapshot.get("operation") or {}).get("status") or ""
-            )
+            operation_status = str((operation_snapshot.get("operation") or {}).get("status") or "")
             if operation_status == "running":
                 ui.notice(
                     "OPERATION CONTINUES",
-                    (
-                        f"Operation {operation_id} is still running and remains "
-                        f"recoverable. Resume run {run_id} later."
-                    ),
+                    f"Operation {operation_id} is still running and remains recoverable. "
+                    f"Resume Run {run_id} later.",
                     tone="amber",
                 )
                 return snapshot
@@ -163,11 +173,7 @@ def _drive_run(
         if status == "waiting_input":
             message = ui.input_required(str(run.get("final_message") or ""))
             if not message:
-                ui.notice(
-                    "PAUSED",
-                    "The run is waiting for additional input.",
-                    tone="amber",
-                )
+                ui.notice("PAUSED", "The Run is waiting for additional input.", tone="amber")
                 return snapshot
             snapshot = client.request(
                 "POST",
@@ -211,26 +217,22 @@ def run_task(
                 "mode": config.get("mode") or "auto",
                 "max_steps": 24,
                 "auto_confirm": bool(auto_confirm),
-                "conversation_id": (
-                    None if new_conversation else config.get("conversation_id")
-                ),
+                "conversation_id": None if new_conversation else config.get("conversation_id"),
                 "new_conversation": bool(new_conversation),
             },
         )
-    conversation = (
-        snapshot.get("conversation")
-        if isinstance(snapshot.get("conversation"), dict)
-        else {}
-    )
+    conversation = snapshot.get("conversation") if isinstance(snapshot.get("conversation"), dict) else {}
     if conversation.get("id"):
         config["conversation_id"] = conversation["id"]
         base._save(config)
-    snapshot = _drive_run(client, snapshot, actor=actor, ui=ui)
-    conversation = (
-        snapshot.get("conversation")
-        if isinstance(snapshot.get("conversation"), dict)
-        else {}
+    snapshot = _drive_run(
+        client,
+        snapshot,
+        actor=actor,
+        ui=ui,
+        auto_mode_available=bool(config.get("auto_mode", True)),
     )
+    conversation = snapshot.get("conversation") if isinstance(snapshot.get("conversation"), dict) else {}
     if conversation.get("id"):
         config["conversation_id"] = conversation["id"]
         base._save(config)
@@ -238,8 +240,6 @@ def run_task(
 
 
 def main(argv: list[str] | None = None) -> int:
-    # Preserve the stable terminal implementation while replacing only the
-    # context-sensitive foreground path with durable, nonblocking behavior.
     base._scan_memory = _scan_memory
     base._drive_run = _drive_run
     base.run_task = run_task
