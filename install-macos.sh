@@ -12,11 +12,8 @@ PLIST="$HOME/Library/LaunchAgents/com.cpym.su.lighthouse.plist"
 LABEL="com.cpym.su.lighthouse"
 CONTROL_SERVICE="com.cpym.su.lighthouse.control"
 MODEL_SERVICE="com.cpym.su.lighthouse.model"
-PORT=8787
+PORT_START=8787
 
-# `curl ... | bash` gives the installer a pipe as stdin. Homebrew may read from
-# that pipe and consume the remaining installer source. Re-exec from a complete
-# temporary file before running any package manager command.
 if [[ ! -t 0 && "${LIGHTHOUSE_INSTALL_FROM_FILE:-0}" != "1" ]]; then
   BOOTSTRAP_FILE="$(mktemp "${TMPDIR:-/tmp}/lighthouse-install.XXXXXX")"
   curl -fsSL "$RAW_INSTALL_URL" -o "$BOOTSTRAP_FILE"
@@ -58,7 +55,7 @@ tty_secret() {
 [[ "$(uname -s)" == "Darwin" ]] || fail "this installer currently supports macOS only"
 [[ -t 1 ]] || fail "run the installer from an interactive Terminal window"
 
-say "Installing LightHouse OS — one product, one terminal, built-in intelligence"
+say "Installing LightHouse OS — multi-instance AI operating terminal"
 
 if ! xcode-select -p >/dev/null 2>&1; then
   say "Installing Apple Command Line Tools"
@@ -92,16 +89,13 @@ BREW_PREFIX="$(brew --prefix)"
 mkdir -p "$INSTALL_ROOT" "$LOG_DIR" "$HOME/Library/LaunchAgents"
 chmod 700 "$INSTALL_ROOT"
 
-# Make Homebrew and `lh` available in future zsh login shells. The current
-# parent shell cannot be mutated by an installer subprocess, so the final
-# message also prints an immediate shell refresh command when needed.
 SHELLENV_LINE="eval \"\$($BREW_PREFIX/bin/brew shellenv)\""
 touch "$HOME/.zprofile"
 if ! grep -Fqx "$SHELLENV_LINE" "$HOME/.zprofile"; then
   printf '\n%s\n' "$SHELLENV_LINE" >> "$HOME/.zprofile"
 fi
 
-say "Starting the private local PostgreSQL control plane"
+say "Starting the shared local PostgreSQL Data and Memory Kernel"
 brew services start postgresql@16 >/dev/null </dev/null
 for _ in {1..60}; do
   "$PG_BIN/pg_isready" -h 127.0.0.1 -p 5432 >/dev/null 2>&1 && break
@@ -127,36 +121,118 @@ say "Installing the complete LightHouse package"
 "$VENV_DIR/bin/python" -m pip install --upgrade pip </dev/null
 "$VENV_DIR/bin/pip" install --upgrade "$APP_DIR" </dev/null
 
-CONTROL_KEY="$("$PYTHON" - <<'PY'
+if ! security find-generic-password -a "$(id -un)" -s "$CONTROL_SERVICE" -w >/dev/null 2>&1; then
+  CONTROL_KEY="$("$PYTHON" - <<'PY'
 import secrets
 print(secrets.token_urlsafe(48))
 PY
+  )"
+  security add-generic-password -U -a "$(id -un)" -s "$CONTROL_SERVICE" -w "$CONTROL_KEY" >/dev/null
+  unset CONTROL_KEY
+fi
+
+EXISTING_MODEL_BASE="$("$PYTHON" - "$CONFIG_FILE" <<'PY'
+import json, pathlib, sys
+try:
+    value = json.loads(pathlib.Path(sys.argv[1]).read_text(encoding='utf-8'))
+except Exception:
+    value = {}
+print(value.get('model_base_url') or '')
+PY
 )"
-security add-generic-password -U -a "$(id -un)" -s "$CONTROL_SERVICE" -w "$CONTROL_KEY" >/dev/null
+EXISTING_MODEL_NAME="$("$PYTHON" - "$CONFIG_FILE" <<'PY'
+import json, pathlib, sys
+try:
+    value = json.loads(pathlib.Path(sys.argv[1]).read_text(encoding='utf-8'))
+except Exception:
+    value = {}
+print(value.get('model') or '')
+PY
+)"
+MODEL_BASE_URL="${LIGHTHOUSE_MODEL_BASE_URL:-$EXISTING_MODEL_BASE}"
+MODEL_NAME="${LIGHTHOUSE_MODEL:-$EXISTING_MODEL_NAME}"
+if [[ -z "$MODEL_BASE_URL" ]]; then MODEL_BASE_URL="$(tty_read 'Model API base URL (for example https://api.openai.com/v1): ')"; fi
+if [[ -z "$MODEL_NAME" ]]; then MODEL_NAME="$(tty_read 'Model name: ')"; fi
+if ! security find-generic-password -a "$(id -un)" -s "$MODEL_SERVICE" -w >/dev/null 2>&1; then
+  MODEL_KEY="${LIGHTHOUSE_MODEL_API_KEY:-}"
+  if [[ -z "$MODEL_KEY" ]]; then MODEL_KEY="$(tty_secret 'Model API key (hidden): ')"; fi
+  [[ -n "$MODEL_KEY" ]] || fail "model API key is required"
+  security add-generic-password -U -a "$(id -un)" -s "$MODEL_SERVICE" -w "$MODEL_KEY" >/dev/null
+  unset MODEL_KEY
+fi
+[[ -n "$MODEL_BASE_URL" && -n "$MODEL_NAME" ]] || fail "model API base URL and model name are required"
 
-MODEL_BASE_URL="$(tty_read 'Model API base URL (for example https://api.openai.com/v1): ')"
-MODEL_NAME="$(tty_read 'Model name: ')"
-MODEL_KEY="$(tty_secret 'Model API key (hidden): ')"
-[[ -n "$MODEL_BASE_URL" && -n "$MODEL_NAME" && -n "$MODEL_KEY" ]] || fail "model API base URL, model name and API key are required"
-security add-generic-password -U -a "$(id -un)" -s "$MODEL_SERVICE" -w "$MODEL_KEY" >/dev/null
-unset MODEL_KEY CONTROL_KEY
+launchctl bootout "gui/$(id -u)/$LABEL" >/dev/null 2>&1 || true
+for _ in {1..20}; do
+  CURRENT_PORT="$("$PYTHON" - "$CONFIG_FILE" "$PORT_START" <<'PY'
+import json, pathlib, sys
+try:
+    value = json.loads(pathlib.Path(sys.argv[1]).read_text(encoding='utf-8'))
+except Exception:
+    value = {}
+print(int(value.get('port') or sys.argv[2]))
+PY
+)"
+  /usr/sbin/lsof -nP -iTCP:"$CURRENT_PORT" -sTCP:LISTEN >/dev/null 2>&1 || break
+  sleep 0.25
+done
+PREFERRED_PORT="$("$PYTHON" - "$CONFIG_FILE" "$PORT_START" <<'PY'
+import json, pathlib, sys
+try:
+    value = json.loads(pathlib.Path(sys.argv[1]).read_text(encoding='utf-8'))
+except Exception:
+    value = {}
+print(int(value.get('port') or sys.argv[2]))
+PY
+)"
+PORT="$("$PYTHON" - "$PREFERRED_PORT" <<'PY'
+import socket, sys
+start = max(1, int(sys.argv[1]))
+for port in list(range(start, 65536)) + list(range(1024, start)):
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    try:
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        sock.bind(('127.0.0.1', port))
+    except OSError:
+        sock.close()
+        continue
+    sock.close()
+    print(port)
+    raise SystemExit(0)
+raise SystemExit('no free local port is available')
+PY
+)"
+if [[ "$PORT" != "$PREFERRED_PORT" ]]; then
+  say "Port $PREFERRED_PORT is occupied; assigning the default LightHouse instance to $PORT"
+fi
 
-"$PYTHON" - "$CONFIG_FILE" "$DATABASE_URL" "$MODEL_BASE_URL" "$MODEL_NAME" <<'PY'
+"$PYTHON" - "$CONFIG_FILE" "$DATABASE_URL" "$MODEL_BASE_URL" "$MODEL_NAME" "$PORT" <<'PY'
 import json, os, pathlib, sys
 path = pathlib.Path(sys.argv[1])
-value = {
-    "url": "http://127.0.0.1:8787",
-    "database_url": sys.argv[2],
-    "model_base_url": sys.argv[3].rstrip("/"),
-    "model": sys.argv[4],
-    "model_json_mode": True,
-    "actor": os.environ.get("USER") or "operator",
-    "host": "127.0.0.1",
-    "port": 8787,
-}
-path.write_text(json.dumps(value, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+try:
+    value = json.loads(path.read_text(encoding='utf-8'))
+except Exception:
+    value = {}
+port = int(sys.argv[5])
+value.update({
+    'url': f'http://127.0.0.1:{port}',
+    'database_url': sys.argv[2],
+    'model_base_url': sys.argv[3].rstrip('/'),
+    'model': sys.argv[4],
+    'model_json_mode': True,
+    'actor': os.environ.get('USER') or 'operator',
+    'host': '127.0.0.1',
+    'port': port,
+    'platform': 'macos',
+    'instance_id': 'default',
+    'instance_name': 'default',
+    'instance_kind': 'system',
+})
+path.write_text(json.dumps(value, ensure_ascii=False, indent=2) + '\n', encoding='utf-8')
 path.chmod(0o600)
 PY
+
+LIGHTHOUSE_CONFIG="$CONFIG_FILE" "$VENV_DIR/bin/python" -c "from lighthouse.instances import ensure_default_instance; ensure_default_instance()"
 
 cat > "$PLIST" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
@@ -171,6 +247,7 @@ cat > "$PLIST" <<PLIST
     <key>HOME</key><string>$HOME</string>
     <key>PATH</key><string>$VENV_DIR/bin:$PG_BIN:$BREW_PREFIX/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
     <key>LIGHTHOUSE_CONFIG</key><string>$CONFIG_FILE</string>
+    <key>LIGHTHOUSE_INSTANCE_ID</key><string>default</string>
   </dict>
   <key>RunAtLoad</key><true/>
   <key>KeepAlive</key><true/>
@@ -183,25 +260,12 @@ PLIST
 chmod 600 "$PLIST"
 ln -sfn "$VENV_DIR/bin/lh" "$BREW_PREFIX/bin/lh"
 
-launchctl bootout "gui/$(id -u)/$LABEL" >/dev/null 2>&1 || true
-for _ in {1..20}; do
-  if ! /usr/sbin/lsof -nP -iTCP:"$PORT" -sTCP:LISTEN >/dev/null 2>&1; then
-    break
-  fi
-  sleep 0.25
-done
-if /usr/sbin/lsof -nP -iTCP:"$PORT" -sTCP:LISTEN >/dev/null 2>&1; then
-  printf '\nPort %s is already in use:\n' "$PORT" >&2
-  /usr/sbin/lsof -nP -iTCP:"$PORT" -sTCP:LISTEN >&2 || true
-  fail "cannot start LightHouse while another process owns 127.0.0.1:$PORT"
-fi
-
 : > "$LOG_DIR/server.log"
 : > "$LOG_DIR/server-error.log"
 launchctl bootstrap "gui/$(id -u)" "$PLIST"
 launchctl kickstart -k "gui/$(id -u)/$LABEL"
 
-say "Waiting for LightHouse"
+say "Waiting for the default LightHouse instance on port $PORT"
 for _ in {1..60}; do
   curl --noproxy '*' -fsS "http://127.0.0.1:$PORT/healthz" >/dev/null 2>&1 && break
   sleep 1
@@ -222,8 +286,9 @@ if ! "$BREW_PREFIX/bin/lh" doctor; then
 fi
 
 say "LightHouse is installed."
-printf "\nOpen any project and run:\n\n  cd /path/to/project\n  lh\n\n"
+printf "\nDefault instance: http://127.0.0.1:%s\n\n" "$PORT"
+printf "Open any project and run:\n\n  cd /path/to/project\n  lh\n\n"
+printf "Open another independent instance with:\n\n  lh new\n\n"
 if ! command -v lh >/dev/null 2>&1; then
   printf 'Refresh this shell once with:\n\n  exec zsh -l\n\n'
 fi
-printf "LightHouse will bind that directory and start its built-in reasoning loop.\n"
