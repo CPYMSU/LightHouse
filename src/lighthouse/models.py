@@ -53,6 +53,8 @@ class AgentRunStatus(StrEnum):
     AWAITING_CONFIRMATION = "awaiting_confirmation"
     WAITING_INPUT = "waiting_input"
     SUCCEEDED = "succeeded"
+    COMPLETED_WITH_WARNING = "completed_with_warning"
+    PARTIALLY_COMPLETED = "partially_completed"
     FAILED = "failed"
     CANCELLED = "cancelled"
 
@@ -216,6 +218,11 @@ class AgentRunView:
     final_message: str | None
     created_at: datetime
     updated_at: datetime
+    execution_status: str = "not_started"
+    response_status: str = "pending"
+    goal_status: str = "unknown"
+    warning: str | None = None
+    auto_scope: dict[str, Any] = field(default_factory=dict)
 
     def public_dict(self) -> dict[str, Any]:
         return {
@@ -228,8 +235,13 @@ class AgentRunView:
             "max_steps": self.max_steps,
             "current_step": self.current_step,
             "auto_confirm": self.auto_confirm,
+            "auto_scope": self.auto_scope,
             "pending_operation_id": self.pending_operation_id,
             "final_message": self.final_message,
+            "execution_status": self.execution_status,
+            "response_status": self.response_status,
+            "goal_status": self.goal_status,
+            "warning": self.warning,
             "created_at": self.created_at.isoformat(),
             "updated_at": self.updated_at.isoformat(),
         }
