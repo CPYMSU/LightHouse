@@ -3,6 +3,7 @@ set -Eeuo pipefail
 
 REPO_URL="https://github.com/CPYMSU/LightHouse.git"
 RAW_INSTALL_URL="https://raw.githubusercontent.com/CPYMSU/LightHouse/main/install-macos.sh"
+API_INSTALL_URL="https://api.github.com/repos/CPYMSU/LightHouse/contents/install-macos.sh?ref=main"
 INSTALL_ROOT="${LIGHTHOUSE_HOME:-$HOME/.lighthouse}"
 APP_DIR="$INSTALL_ROOT/app"
 VENV_DIR="$INSTALL_ROOT/venv"
@@ -14,9 +15,40 @@ CONTROL_SERVICE="com.cpym.su.lighthouse.control"
 MODEL_SERVICE="com.cpym.su.lighthouse.model"
 PORT_START=8787
 
+fetch_script() {
+  local destination="$1" raw_url="$2" api_url="$3" source attempt
+  for source in raw api; do
+    for attempt in 1 2 3; do
+      rm -f "$destination"
+      if [[ "$source" == "raw" ]]; then
+        curl --http1.1 --connect-timeout 20 --max-time 180 \
+          --fail --location --silent --show-error \
+          "$raw_url" -o "$destination" >/dev/null 2>&1 || true
+      else
+        curl --http1.1 --connect-timeout 20 --max-time 180 \
+          --fail --location --silent --show-error \
+          -H 'Accept: application/vnd.github.raw+json' \
+          "$api_url" -o "$destination" >/dev/null 2>&1 || true
+      fi
+      if [[ -s "$destination" ]] \
+        && head -n 1 "$destination" | grep -q '^#!/bin/bash' \
+        && /bin/bash -n "$destination" >/dev/null 2>&1; then
+        return 0
+      fi
+      sleep "$attempt"
+    done
+  done
+  rm -f "$destination"
+  return 1
+}
+
 if [[ ! -t 0 && "${LIGHTHOUSE_INSTALL_FROM_FILE:-0}" != "1" ]]; then
   BOOTSTRAP_FILE="$(mktemp "${TMPDIR:-/tmp}/lighthouse-install.XXXXXX")"
-  curl -fsSL "$RAW_INSTALL_URL" -o "$BOOTSTRAP_FILE"
+  if ! fetch_script "$BOOTSTRAP_FILE" "$RAW_INSTALL_URL" "$API_INSTALL_URL"; then
+    printf 'LightHouse installer: could not download the installer from GitHub after automatic retries.\n' >&2
+    rm -f "$BOOTSTRAP_FILE"
+    exit 1
+  fi
   chmod 700 "$BOOTSTRAP_FILE"
   export LIGHTHOUSE_INSTALL_FROM_FILE=1
   export LIGHTHOUSE_BOOTSTRAP_FILE="$BOOTSTRAP_FILE"
@@ -69,7 +101,15 @@ fi
 
 if ! command -v brew >/dev/null 2>&1; then
   say "Installing Homebrew"
-  /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)" </dev/tty
+  HOMEBREW_FILE="$(mktemp "${TMPDIR:-/tmp}/homebrew-install.XXXXXX")"
+  if ! fetch_script \
+    "$HOMEBREW_FILE" \
+    "https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh" \
+    "https://api.github.com/repos/Homebrew/install/contents/install.sh?ref=HEAD"; then
+    fail "Homebrew installer could not be downloaded from GitHub"
+  fi
+  /bin/bash "$HOMEBREW_FILE" </dev/tty
+  rm -f "$HOMEBREW_FILE"
 fi
 if [[ -x /opt/homebrew/bin/brew ]]; then
   eval "$(/opt/homebrew/bin/brew shellenv)"
@@ -304,17 +344,38 @@ PLIST
 chmod 600 "$PLIST"
 ln -sfn "$VENV_DIR/bin/lh" "$BREW_PREFIX/bin/lh"
 
+lighthouse_ready() {
+  curl --noproxy '*' -fsS "http://127.0.0.1:$PORT/healthz" >/dev/null 2>&1
+}
+
+wait_for_lighthouse() {
+  local attempts="${1:-60}" attempt
+  for ((attempt = 0; attempt < attempts; attempt++)); do
+    lighthouse_ready && return 0
+    sleep 1
+  done
+  return 1
+}
+
+start_lighthouse_service_with_recovery() {
+  local domain="gui/$(id -u)" target="gui/$(id -u)/$LABEL"
+  launchctl bootstrap "$domain" "$PLIST" >/dev/null 2>&1 || true
+  launchctl kickstart -k "$target" >/dev/null 2>&1 || true
+  wait_for_lighthouse 30 && return 0
+
+  say "LightHouse service startup issue detected; repairing automatically"
+  launchctl bootout "$target" >/dev/null 2>&1 || true
+  launchctl bootout "$domain" "$PLIST" >/dev/null 2>&1 || true
+  sleep 1
+  launchctl bootstrap "$domain" "$PLIST" >/dev/null 2>&1 || return 1
+  launchctl kickstart -k "$target" >/dev/null 2>&1 || true
+  wait_for_lighthouse 60
+}
+
 : > "$LOG_DIR/server.log"
 : > "$LOG_DIR/server-error.log"
-launchctl bootstrap "gui/$(id -u)" "$PLIST"
-launchctl kickstart -k "gui/$(id -u)/$LABEL"
-
-say "Waiting for the default LightHouse instance on port $PORT"
-for _ in {1..60}; do
-  curl --noproxy '*' -fsS "http://127.0.0.1:$PORT/healthz" >/dev/null 2>&1 && break
-  sleep 1
-done
-if ! curl --noproxy '*' -fsS "http://127.0.0.1:$PORT/healthz" >/dev/null; then
+say "Starting the default LightHouse instance on port $PORT"
+if ! start_lighthouse_service_with_recovery; then
   show_server_logs
   fail "LightHouse did not become healthy; inspect $LOG_DIR/server-error.log"
 fi
