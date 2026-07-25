@@ -10,10 +10,32 @@ $ErrorActionPreference = 'Stop'
 $TaskName = 'LightHouse'
 $InstallRoot = if ($env:LIGHTHOUSE_HOME) { [IO.Path]::GetFullPath($env:LIGHTHOUSE_HOME) } else { Join-Path $HOME '.lighthouse' }
 $BinDir = Join-Path $InstallRoot 'bin'
+$ConfigFile = Join-Path $InstallRoot 'config.json'
 
 Write-Host 'Removing the LightHouse Windows background task' -ForegroundColor Cyan
 try { Stop-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue } catch { }
 try { Unregister-ScheduledTask -TaskName $TaskName -Confirm:$false -ErrorAction SilentlyContinue } catch { }
+
+# Stop only the private PostgreSQL cluster owned by LightHouse. External or
+# system-wide PostgreSQL services are never modified by the uninstaller.
+if (Test-Path -LiteralPath $ConfigFile -PathType Leaf) {
+    try {
+        $config = Get-Content -LiteralPath $ConfigFile -Raw -Encoding UTF8 | ConvertFrom-Json
+        if ($config.database_managed -eq $true -and $config.postgres_bin -and $config.postgres_data_dir) {
+            $pgCtl = Join-Path ([string]$config.postgres_bin) 'pg_ctl.exe'
+            if (Test-Path -LiteralPath $pgCtl -PathType Leaf) {
+                & $pgCtl status -D ([string]$config.postgres_data_dir) *> $null
+                if ($LASTEXITCODE -eq 0) {
+                    Write-Host 'Stopping the private LightHouse PostgreSQL cluster' -ForegroundColor Cyan
+                    & $pgCtl stop -D ([string]$config.postgres_data_dir) -m fast -w *> $null
+                }
+            }
+        }
+    }
+    catch {
+        Write-Warning "Could not inspect or stop the private database cleanly: $($_.Exception.Message)"
+    }
+}
 
 $userPath = [Environment]::GetEnvironmentVariable('Path', 'User')
 if ($userPath) {
@@ -24,16 +46,16 @@ if ($userPath) {
 }
 
 if ($KeepConfig) {
-    Write-Host 'Removing application files while preserving config and encrypted secrets' -ForegroundColor Cyan
+    Write-Host 'Removing application files while preserving config, encrypted secrets and private database data' -ForegroundColor Cyan
     foreach ($name in @('app', 'venv', 'bin', 'logs', 'start-server.ps1')) {
         Remove-Item -LiteralPath (Join-Path $InstallRoot $name) -Recurse -Force -ErrorAction SilentlyContinue
     }
 }
 else {
-    Write-Host 'Removing LightHouse application files and user-bound encrypted secrets' -ForegroundColor Cyan
+    Write-Host 'Removing LightHouse application files, private database and user-bound encrypted secrets' -ForegroundColor Cyan
     Remove-Item -LiteralPath $InstallRoot -Recurse -Force -ErrorAction SilentlyContinue
     $secretRoot = Join-Path $env:LOCALAPPDATA 'LightHouse\secrets'
     Remove-Item -LiteralPath $secretRoot -Recurse -Force -ErrorAction SilentlyContinue
 }
 
-Write-Host 'LightHouse was removed. PostgreSQL and its databases were left untouched.' -ForegroundColor Green
+Write-Host 'LightHouse was removed. External PostgreSQL installations and databases were left untouched.' -ForegroundColor Green
