@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "lighthouse-os"
-version = "0.8.0"
+version = "0.8.1"
 description = "PostgreSQL-first governed AI operating terminal"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -24,7 +24,7 @@ dependencies = [
 dev = ["pytest>=8,<9"]
 
 [project.scripts]
-lh = "lighthouse.terminal_v2:main"
+lh = "lighthouse.terminal_entry:main"
 lighthouse-api = "lighthouse.server:main"
 
 [tool.hatch.build.targets.wheel]
