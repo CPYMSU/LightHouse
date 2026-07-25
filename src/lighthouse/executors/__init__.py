@@ -6,9 +6,11 @@ from ..models import Capability, ExecutionResult, Target
 from .agent_bus import AgentBusExecutor
 from .desktop import DesktopExecutor
 from .elastic_agent_bus import ElasticAgentBusExecutor
+from .massive_build import MassiveBuildExecutor
 from .mega_project import MegaProjectExecutor
 from .postgres import PostgresExecutor
 from .project_file import ProjectFileExecutor
+from .research import ResearchExecutor
 from .system import SystemExecutor as PosixSystemExecutor
 from .windows_system import WindowsSystemExecutor
 
@@ -40,9 +42,11 @@ __all__ = [
     "AgentBusExecutor",
     "DesktopExecutor",
     "ElasticAgentBusExecutor",
+    "MassiveBuildExecutor",
     "MegaProjectExecutor",
     "PostgresExecutor",
     "ProjectFileExecutor",
+    "ResearchExecutor",
     "SystemExecutor",
     "PosixSystemExecutor",
     "WindowsSystemExecutor",
