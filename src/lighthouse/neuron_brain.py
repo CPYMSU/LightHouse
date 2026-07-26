@@ -46,10 +46,12 @@ class NeuronAwareLightHouseBrain(LightHouseBrain):
         base = super()._system_prompt(run)
         return (
             "Context Intelligence may include a persistent neuron_field generated before model "
-            "reasoning. Its cognitive_control has already been applied programmatically to context "
-            "and tool budgets; it is runtime state, not a role-play persona instruction. Read the "
-            "remaining activations, predictions, attractors and circuits as evidence of the system's "
-            "learned attention and decision history. Factual claims still require verified data and "
-            "Receipts, and neuron conflict calls for investigation rather than automatic refusal. "
+            "reasoning. It remains deterministic reflex evidence from twenty-four autonomous "
+            "data neurons, not decorative emotion text. Its cognitive_control has already been "
+            "applied programmatically to context and tool budgets; it is runtime state, not a "
+            "role-play persona instruction. Read activations, predictions, attractors and circuits "
+            "as evidence of the system's learned attention and decision history. Factual claims "
+            "still require verified data and Receipts. Conflicting neurons are a signal to "
+            "investigate; they are not an automatic refusal boundary. "
             + base
         )
