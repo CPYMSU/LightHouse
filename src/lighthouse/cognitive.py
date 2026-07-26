@@ -6,8 +6,8 @@ import re
 from typing import Any
 
 from .engineering import StructuredOpenAICompatibleProvider
-from .models import AgentRunStatus, KernelMode
-from .provider import AgentDecision, AgentProtocolError, parse_decision
+from .models import AgentRunStatus
+from .provider import AgentDecision, parse_decision
 
 
 _PHASES = {
@@ -29,11 +29,14 @@ _TERMINAL = {
     AgentRunStatus.FAILED,
     AgentRunStatus.CANCELLED,
 }
-_SECRET_PATTERNS = (
-    re.compile(r"(?i)(authorization\s*:\s*bearer\s+)[^\s,;]+"),
-    re.compile(r"(?i)\b(sk-[a-z0-9_-]{8,})\b"),
-    re.compile(r"(?i)((?:api[_-]?key|password|passwd|secret|access[_-]?token)\s*[:=]\s*)[^\s,;]+"),
-    re.compile(r"(?i)(://[^:/\s]+:)[^@/\s]+(@)"),
+_SECRET_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
+    (re.compile(r"(?i)(authorization\s*:\s*bearer\s+)[^\s,;]+"), r"\1[REDACTED]"),
+    (re.compile(r"(?i)\bsk-[a-z0-9_-]{8,}\b"), "[REDACTED]"),
+    (
+        re.compile(r"(?i)((?:api[_-]?key|password|passwd|secret|access[_-]?token)\s*[:=]\s*)[^\s,;]+"),
+        r"\1[REDACTED]",
+    ),
+    (re.compile(r"(?i)(://[^:/\s]+:)[^@/\s]+(@)"), r"\1[REDACTED]\2"),
 )
 
 
@@ -53,11 +56,8 @@ class CognitiveAgentDecision(AgentDecision):
 
 def _redact_text(value: Any, limit: int = 1200) -> str:
     text = str(value if value is not None else "")
-    for pattern in _SECRET_PATTERNS:
-        if pattern.groups >= 2:
-            text = pattern.sub(r"\1[REDACTED]\2", text)
-        else:
-            text = pattern.sub(r"\1[REDACTED]", text)
+    for pattern, replacement in _SECRET_PATTERNS:
+        text = pattern.sub(replacement, text)
     if len(text) > limit:
         text = text[: limit - 1] + "…"
     return text
@@ -74,7 +74,10 @@ def _public_value(value: Any, *, depth: int = 0) -> Any:
         result: dict[str, Any] = {}
         for key, item in list(value.items())[:32]:
             name = _redact_text(key, 80)
-            if any(term in name.lower() for term in ("api_key", "password", "secret", "authorization")):
+            if any(
+                term in name.lower()
+                for term in ("api_key", "password", "secret", "authorization", "access_token")
+            ):
                 result[name] = "[REDACTED]"
             else:
                 result[name] = _public_value(item, depth=depth + 1)
@@ -289,6 +292,19 @@ def _activity_for_observation(sequence: int, payload: dict[str, Any]) -> dict[st
     }
 
 
+def _error_update(sequence: int, kind: str, payload: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "sequence": sequence,
+        "phase": "recovering",
+        "title": kind.replace("_", " ").title(),
+        "summary": _redact_text(payload.get("error") or payload.get("message") or payload, 700),
+        "details": [],
+        "evidence": [],
+        "importance": "critical",
+        "visibility": "focus",
+    }
+
+
 def build_cognitive_observer(run: dict[str, Any], steps: list[dict[str, Any]]) -> dict[str, Any]:
     state: dict[str, Any] = {
         "goal": {"summary": _redact_text(run.get("task") or "", 800), "success_criteria": []},
@@ -419,6 +435,29 @@ def build_cognitive_observer(run: dict[str, Any], steps: list[dict[str, Any]]) -
                         "visibility": "balanced",
                     }
                 )
+        elif kind == "input_required":
+            timeline.append(
+                {
+                    "sequence": sequence,
+                    "phase": "decision",
+                    "title": "User input required",
+                    "summary": _redact_text(payload.get("message") or "", 700),
+                    "details": [],
+                    "evidence": [],
+                    "importance": "critical",
+                    "visibility": "focus",
+                }
+            )
+        elif kind in {
+            "protocol_error",
+            "provider_error",
+            "tool_rejected",
+            "address_rejected",
+            "run_failed",
+        }:
+            state["active_work"]["stage"] = "recovering"
+            state["active_work"]["headline"] = "Recovering from a runtime error"
+            timeline.append(_error_update(sequence, kind, payload))
         elif kind == "budget_extended":
             timeline.append(
                 {
@@ -483,8 +522,7 @@ class CognitiveContinuityMixin:
     def _system_prompt(self, run) -> str:
         base = super()._system_prompt(run)
         return (
-            base
-            + " You maintain a user-visible Cognitive Continuity record. Do not reveal private chain-of-thought, "
+            "You maintain a user-visible Cognitive Continuity record. Do not reveal private chain-of-thought, "
             "hidden scratch work, secrets or raw internal deliberation. Instead, when useful, add an optional "
             "display object containing phase, title, summary, details, evidence, importance and visibility. "
             "Its content must be concise, conclusion-oriented and safe to show: what you understand, what changed, "
@@ -492,8 +530,9 @@ class CognitiveContinuityMixin:
             "status filler and omit display for routine low-value steps. You may also add an optional cognitive_delta "
             "object updating goal, understanding, strategy, active_work, work_items, completed, open_questions, "
             "next_intent, verified_facts, assumptions or decisions. Facts require evidence; uncertain ideas belong "
-            "under assumptions or open_questions. The normal tool/final/ask object remains authoritative, with "
-            "display and cognitive_delta as optional additional fields."
+            "under assumptions or open_questions. When the later base prompt lists tool, final or ask decision "
+            "objects, display and cognitive_delta remain optional additional fields on those same objects. "
+            + base
         )
 
     def advance(self, run_id: str) -> dict[str, Any]:
