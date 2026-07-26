@@ -7,7 +7,6 @@ from typing import Any
 from .agent_adapter import AgentRepositoryAdapter
 from .agent_capabilities import AGENT_BUS_CAPABILITIES
 from .agent_registry import AgentBus2Registry
-from .agent_results import AgentBusStructuredProvider
 from .agent_store import PostgresAgentStore
 from .capabilities import CapabilityRegistry, DEFAULT_CAPABILITIES
 from .config import Settings
@@ -25,6 +24,7 @@ from .executors import (
     SystemExecutor,
 )
 from .extra_capabilities import SYSTEM_TYPED_CAPABILITIES
+from .intensity_provider import IntensityAwareAgentBusProvider
 from .kernel import OperationKernel
 from .massive_build import PostgresMassiveBuildStore
 from .massive_build_capabilities import MASSIVE_BUILD_CAPABILITIES
@@ -143,7 +143,7 @@ def build_kernel(settings: Settings, *, migrate: bool = True) -> OperationKernel
 def build_brain(settings: Settings, kernel: OperationKernel) -> MegaProjectLightHouseBrain:
     usage_store = getattr(kernel, "usage_store", None) or PostgresModelUsageStore(settings.database_url)
     if settings.model and settings.model_base_url and settings.model_api_key:
-        provider = AgentBusStructuredProvider(
+        provider = IntensityAwareAgentBusProvider(
             base_url=settings.model_base_url,
             api_key=settings.model_api_key,
             model=settings.model,
