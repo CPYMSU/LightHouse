@@ -33,8 +33,8 @@ AGENT_BUS_CAPABILITIES: tuple[Capability, ...] = (
         "agent.bus.dispatch.v1",
         "agent dispatch",
         (
-            "Delegate an investigation, research, taste, frontend, backend, wiring, "
-            "integration, testing or memory task. The main AI chooses whether delegation helps."
+            "Delegate one structured professional Work Order. Agent Bus 2.0 injects shared cognition, "
+            "deduplicates overlapping active work and preserves main-AI direction."
         ),
         "dispatch",
         aliases=("dispatch agent", "agent bus", "分派 agent", "調用 agent", "代理協作"),
@@ -50,8 +50,8 @@ AGENT_BUS_CAPABILITIES: tuple[Capability, ...] = (
         "agent.bus.dispatch_many.v1",
         "agent dispatch many",
         (
-            "Create any number of logical specialist Work Orders chosen by the main AI. "
-            "The durable queue controls physical concurrency without a product-level logical limit."
+            "Create a dynamic collaboration graph of professional Work Orders. Items may depend on "
+            "earlier batch indices or existing Work Order IDs; the main AI chooses the graph."
         ),
         "dispatch_many",
         aliases=("dispatch agents", "scale agents", "批量分派 agents", "規模化調查"),
@@ -75,7 +75,7 @@ AGENT_BUS_CAPABILITIES: tuple[Capability, ...] = (
     _cap(
         "agent.bus.results.v1",
         "agent results",
-        "Read a batch of durable Work Order states and completed results without waiting.",
+        "Read a batch of durable structured Agent results without waiting.",
         "results",
         aliases=("agent batch results", "匯總 agent 結果", "批量查看 agents"),
         arguments={"work_order_ids": {"type": "array", "required": True}},
@@ -85,7 +85,7 @@ AGENT_BUS_CAPABILITIES: tuple[Capability, ...] = (
         "agent wait many",
         (
             "Optionally wait for all selected Agents or only selected critical roles. "
-            "Waiting is a main-AI choice, never an enforced workflow."
+            "Waiting remains a main-AI judgment."
         ),
         "wait_many",
         aliases=("wait for agents", "等待關鍵 agents", "等 agents 返回"),
@@ -98,7 +98,7 @@ AGENT_BUS_CAPABILITIES: tuple[Capability, ...] = (
     _cap(
         "agent.bus.events.v1",
         "agent events",
-        "Read partial Agent progress, critical findings, permission needs and completion events.",
+        "Read Agent cognition, progress, findings, conflicts, permission needs and completion events.",
         "events",
         aliases=("agent progress", "agents 在做什麼", "agent 部分結果"),
         arguments={
@@ -107,17 +107,37 @@ AGENT_BUS_CAPABILITIES: tuple[Capability, ...] = (
         },
     ),
     _cap(
+        "agent.bus.findings.v1",
+        "agent findings",
+        "Read verified and proposed findings shared by Agents in the current Run.",
+        "findings",
+        aliases=("shared findings", "agent finding board", "共享發現", "查閱 agent 事實"),
+        arguments={
+            "run_id": {"type": "string", "required": False},
+            "limit": {"type": "integer", "required": False},
+        },
+    ),
+    _cap(
+        "agent.bus.conflicts.v1",
+        "agent conflicts",
+        "Read active design, contract or overlapping write-intent conflicts for main-AI review.",
+        "conflicts",
+        aliases=("agent conflict", "write conflict", "agent 衝突", "協作衝突"),
+        arguments={
+            "run_id": {"type": "string", "required": False},
+            "limit": {"type": "integer", "required": False},
+        },
+    ),
+    _cap(
         "agent.bus.coordination.v1",
         "agent coordination",
         (
-            "Return advisory waiting or parallel-work guidance from current Agent state. "
-            "The main AI remains free to wait, continue, or review later."
+            "Return advisory waiting, parallel-work and conflict guidance from Agent Bus 2.0. "
+            "The main AI remains free to decide."
         ),
         "coordination",
         aliases=("should wait agents", "協同建議", "並行後回看"),
-        arguments={
-            "project_id": {"type": "string", "required": False},
-        },
+        arguments={"project_id": {"type": "string", "required": False}},
     ),
     _cap(
         "agent.bus.cancel.v1",
