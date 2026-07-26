@@ -29,6 +29,13 @@ Background intelligence
   -> cached Context and project distillation
 ```
 
+## Coding production line
+
+The planned native coding runtime is documented in the
+[CodeFoundry Blueprint](docs/CODE_FOUNDRY_BLUEPRINT.md). It defines how
+LightHouse will internalise Codex-inspired coding-loop design without embedding
+Codex or adopting its runtime interfaces.
+
 ## Trusted main AI
 
 The main AI can freely decide to:
