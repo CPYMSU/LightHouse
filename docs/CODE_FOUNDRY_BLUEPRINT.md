@@ -368,16 +368,21 @@ third-party notice material. This blueprint alone does not vendor Codex code.
 | Upstream Codex source | Native LightHouse destination | Reuse mode | First acceptance test |
 |---|---|---|---|
 | `codex-rs/core/src/context_manager/history.rs` | `code_foundry/history.py` | semantic port of typed history, normalization, bounded outputs, state diffs | stale observations disappear after a patch; pinned evidence remains |
-| `codex-rs/core/src/context/world_state/tools.rs` | `code_foundry/tool_context.py` | design port for incremental tool visibility | only changed tool visibility is reinjected |
+| `codex-rs/core/src/context/world_state/tools.rs` | `code_foundry/tool_context.py` | translated, materially modified incremental tool visibility renderer | only changed tool visibility is reinjected |
+| `codex-rs/utils/string/src/truncate.rs`; `codex-rs/utils/output-truncation/src/lib.rs` | `code_foundry/truncation.py` | translated UTF-8-safe head/tail output truncation | model context is bounded while audit history remains complete |
 | `codex-rs/core/src/tools/registry.rs` | `code_foundry/tools.py` | semantic port of typed registry and per-tool metadata | hidden tools cannot be selected; read tools advertise batchability |
 | `codex-rs/core/src/tools/parallel.rs` | `code_foundry/runtime.py` | algorithmic port of batch lifecycle, cancellation, timing | independent reads overlap; writes preserve order |
-| `codex-rs/core/src/tools/handlers/apply_patch.rs` | `code_foundry/patch.py` | patch-result normalization; executor remains LightHouse native | patch receipt identifies changed paths and invalidates old evidence |
+| `codex-rs/core/src/tools/handlers/apply_patch.rs` | `code_foundry/patch.py` | translated, materially modified patch-result path normalisation; executor remains LightHouse native | patch receipt identifies changed paths and invalidates old evidence |
 | `codex-rs/core/src/session/turn.rs` | `code_foundry/loop.py` | turn loop, tool/result sequencing, pre-sampling compaction | every model turn receives typed action results, not raw global state |
 | `codex-rs/core/gpt_5_codex_prompt.md` | `code_foundry/instructions.py` | behavioural requirements rewritten for LightHouse | instructions prioritise inspect, minimal change, diff, tests |
 
 Do not copy Codex app-server, CLI, TUI, cloud-task, account, or UI sources.
 They do not improve LightHouse's native coding production line and would create
 unwanted protocol and maintenance coupling.
+
+The implementation lineage for source adaptations is maintained in
+[`CODE_FOUNDRY_LINEAGE.md`](CODE_FOUNDRY_LINEAGE.md). It is the release record
+for the exact upstream paths, local modifications, notices, and tests.
 
 ## 13. Module plan
 
@@ -387,27 +392,28 @@ src/lighthouse/code_foundry/
   models.py          # CodeRun, CodeAction, observation, evidence, result
   brief.py           # CodeBriefCompiler
   tools.py           # CodeActionRegistry and tool specifications
+  tool_context.py    # bounded full/delta tool context for model turns
   runtime.py         # batches, ordering, operation adapter, timings
   history.py         # typed history, invalidation, compaction inputs
   loop.py            # CodeFoundry state machine
   provider.py        # CodeModelAdapter and provider translations
+  agent_provider.py  # LightHouse AgentProvider bridge and argument validation
+  events.py          # durable lifecycle event contract
+  durable_run.py     # AgentStore-backed CodeFoundry run service
+  truncation.py      # UTF-8-safe bounded observation context
   patch.py           # changed-path extraction and patch normalisation
   evidence.py        # evidence graph construction
   verification.py    # hard completion gate
-  review.py          # deterministic diff review and optional model review
-  store.py           # repository adapter and persistence records
-  evals.py           # fixture runner and metrics
-  instructions.py    # concise coding-only operating instructions
 
 tests/
-  test_code_foundry_models.py
   test_code_foundry_brief.py
   test_code_foundry_runtime.py
   test_code_foundry_history.py
   test_code_foundry_evidence.py
   test_code_foundry_verification.py
-  test_code_foundry_provider.py
-  test_code_foundry_evals.py
+  test_code_foundry_agent_provider.py
+  test_code_foundry_durable_run.py
+  test_code_foundry_patch.py
 ```
 
 Existing files remain responsible for their current concern:
@@ -421,6 +427,28 @@ Existing files remain responsible for their current concern:
 | `cognitive_projection.py` | retains general projection; no longer serves as the coding transcript |
 | `work_intensity.py` | supplies budget and review depth policy, not completion bypasses |
 | `repository.py` / `agent_store.py` | add durable CodeFoundry records and recovery methods |
+
+### Current implementation snapshot / 目前實作狀態
+
+Implemented now: typed actions and evidence, bounded/invalidation-aware history,
+parallel read execution, Kernel Receipts, a deterministic fresh-diff review,
+the existing LightHouse JSON provider bridge, durable AgentStore lifecycle
+events, and three traceable Apache-2.0 algorithm adaptations. These are native
+LightHouse modules; no Codex process is launched.
+
+目前已完成：型別化 action/evidence、可截斷與可失效的 history、平行讀取、
+Kernel Receipt、重新讀取 diff 的決定性 review、既有 LightHouse JSON provider
+bridge、可持久化的 AgentStore 生命週期事件，以及三個可追溯的 Apache-2.0 演算法
+改造。它們全是原生 LightHouse 模組，不會啟動 Codex 程序。
+
+Still required before default production routing: frozen repository fixtures and
+comparative metrics, live routing from `engineering.py` behind a feature flag,
+and a resumable mid-turn recovery policy. Those are rollout/integration work,
+not missing Codex runtime dependencies.
+
+預設進入正式路由前仍需：固定的 repository fixtures 與比較指標、由 feature flag
+控制的 `engineering.py` 實際路由，以及可從中斷回合恢復的政策。這些是 rollout／
+整合作業，不是缺少 Codex 執行期依賴。
 
 ## 14. Delivery sequence
 
