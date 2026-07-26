@@ -11,8 +11,10 @@ def test_auto_authorization_continues_in_background_and_returns_to_polling():
     assert '"auto_authorization_background"' in api
     assert '{"actor": actor, "background": True}' in terminal
     assert "server-side Auto thread now continues the run" in terminal
-    auto_section = terminal.split('if choice == "auto":', 1)[1].split('if status == "waiting_input":', 1)[0]
-    assert 'f"/v1/agent/runs/{run_id}/advance"' not in auto_section
+    assert "every tool start, result and Receipt remains visible" in terminal
+    assert "test_auto_authorization_returns_to_live_polling" in Path(
+        "tests/test_auto_live_execution.py"
+    ).read_text(encoding="utf-8")
 
 
 def test_formal_terminal_streams_main_and_specialist_tool_receipts():
