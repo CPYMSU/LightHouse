@@ -1,11 +1,20 @@
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass
 import json
 import re
+from threading import Thread
 from typing import Any
 
 from .agent import AgentRuntime, _TERMINAL_AGENT_STATES
+from .code_foundry.agent_provider import AgentProviderCodeAdapter
+from .code_foundry.brief import CodeBriefCompiler
+from .code_foundry.durable_run import AgentStoreCodeRunSink
+from .code_foundry.loop import CodeFoundryLoop, CodeRunOutcome
+from .code_foundry.models import CodeAction, CodeObservation, CodeResultStatus
+from .code_foundry.runtime import CodeRuntime, KernelCodeActionExecutor
+from .code_foundry.tools import CodeActionRegistry
 from .models import (
     AgentRunStatus,
     ConfirmationMode,
@@ -26,6 +35,48 @@ _SHADOW_NAME = re.compile(
     r"(?:^|/)(?:[^/]+(?:_new|_copy|_fixed|_final|_v\d+)|index(?:\s+copy|-copy|_copy)\.[^/]+)$",
     re.IGNORECASE,
 )
+_CODE_TASK_TERMS = re.compile(
+    r"\b(?:code|coding|implement|implementation|fix|bug|debug|refactor|test|tests|"
+    r"function|class|module|api|repository|repo|project|script|build|compile|deploy)\b|"
+    r"(?:程式|代码|編程|编程|實作|实现|修復|修复|除錯|调试|重構|重构|測試|测试|函式|函数|模組|模块|專案|项目|倉庫|仓库|部署)",
+    re.IGNORECASE,
+)
+
+
+class _ReadOnlyShadowExecutor:
+    """Observe a CodeFoundry candidate without permitting a duplicate patch.
+
+    ``shadow`` is deliberately non-authoritative. It exercises the same brief,
+    model adapter, tool vocabulary, and read operations, but records a blocked
+    patch rather than mutating the active workspace a second time.
+    """
+
+    def __init__(self, delegate: KernelCodeActionExecutor):
+        self.delegate = delegate
+
+    async def execute(self, action: CodeAction) -> CodeObservation:
+        if action.mutates_workspace:
+            return CodeObservation(
+                id=f"shadow-blocked:{action.id}",
+                action_id=action.id,
+                kind=action.kind,
+                ok=False,
+                payload={
+                    "shadow": True,
+                    "blocked": "workspace mutation withheld in CodeFoundry shadow mode",
+                    "proposed_arguments": dict(action.arguments),
+                },
+            )
+        observation = await self.delegate.execute(action)
+        return CodeObservation(
+            id=observation.id,
+            action_id=observation.action_id,
+            kind=observation.kind,
+            ok=observation.ok,
+            payload={**observation.payload, "shadow": True},
+            started_at=observation.started_at,
+            completed_at=observation.completed_at,
+        )
 
 
 @dataclass(frozen=True)
@@ -46,6 +97,36 @@ class CompletionReview:
         }
 
 
+def _run_async_safely(awaitable):
+    """Run a CodeFoundry coroutine from sync API and test entry points.
+
+    The public runtime is synchronous today. API handlers normally have no
+    running loop, while notebook/async hosts can. The small thread fallback
+    preserves the same durable run contract in both cases.
+    """
+
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return asyncio.run(awaitable)
+
+    outcome: dict[str, Any] = {}
+    failure: list[BaseException] = []
+
+    def run() -> None:
+        try:
+            outcome["value"] = asyncio.run(awaitable)
+        except BaseException as exc:  # propagate the original provider/runtime error
+            failure.append(exc)
+
+    worker = Thread(target=run, name="lighthouse-code-foundry", daemon=False)
+    worker.start()
+    worker.join()
+    if failure:
+        raise failure[0]
+    return outcome["value"]
+
+
 class AdaptiveEngineeringMixin:
     """Adaptive engineering policy layered over the existing autonomous runtime.
 
@@ -57,6 +138,182 @@ class AdaptiveEngineeringMixin:
     minimum_soft_steps = 48
     hard_step_limit = 256
     extension_size = 24
+
+    def _code_foundry_mode(self) -> str:
+        value = str(getattr(self, "code_foundry_mode", "off") or "off").strip().lower()
+        return value if value in {"off", "shadow", "on"} else "off"
+
+    @staticmethod
+    def _is_coding_task(task: str) -> bool:
+        return bool(_CODE_TASK_TERMS.search(str(task or "")))
+
+    def _code_foundry_route(self, run) -> str:
+        """Choose one durable route for the run instead of re-deciding per turn."""
+
+        for step in reversed(self.repository.list_agent_steps(run.id)):
+            if step.get("kind") != "code_foundry.route_selected":
+                continue
+            payload = step.get("payload") if isinstance(step.get("payload"), dict) else {}
+            selected = str(payload.get("mode") or "off")
+            return selected if selected in {"shadow", "on"} else "off"
+
+        requested = self._code_foundry_mode()
+        if requested == "off":
+            return "off"
+        if run.mode not in {KernelMode.AUTO, KernelMode.SYSTEM}:
+            self.repository.append_agent_step(
+                run.id,
+                "code_foundry.route_skipped",
+                {
+                    "requested_mode": requested,
+                    "reason": f"run kernel mode {run.mode.value} does not expose the native coding tools",
+                },
+            )
+            return "off"
+        if not self._is_coding_task(run.task):
+            self.repository.append_agent_step(
+                run.id,
+                "code_foundry.route_skipped",
+                {
+                    "requested_mode": requested,
+                    "reason": "task did not match the coding-route classifier",
+                },
+            )
+            return "off"
+
+        self.repository.append_agent_step(
+            run.id,
+            "code_foundry.route_selected",
+            {
+                "mode": requested,
+                "authoritative": requested == "on",
+                "reason": "feature flag and coding-route classifier matched",
+            },
+        )
+        return requested
+
+    def _code_foundry_project_context(self, run_id: str) -> dict[str, Any]:
+        for step in reversed(self.repository.list_agent_steps(run_id)):
+            if step.get("kind") != "project_context":
+                continue
+            payload = step.get("payload") if isinstance(step.get("payload"), dict) else {}
+            receipt = payload.get("receipt") if isinstance(payload.get("receipt"), dict) else {}
+            result = receipt.get("result") if isinstance(receipt.get("result"), dict) else {}
+            if result:
+                return dict(result)
+            if isinstance(payload.get("result"), dict):
+                return dict(payload["result"])
+        return {}
+
+    def _code_foundry_brief(self, run) -> Any:
+        self._ensure_project_context(run.id)
+        project_context = self._code_foundry_project_context(run.id)
+        try:
+            state = self._model_state(run.id)
+        except Exception:
+            state = {}
+        cognitive = state.get("context_intelligence") if isinstance(state, dict) else {}
+        if not isinstance(cognitive, dict):
+            continuity = state.get("cognitive_continuity") if isinstance(state, dict) else {}
+            cognitive = continuity.get("state") if isinstance(continuity, dict) else {}
+        workspace = self.repository.get_workspace(run.workspace_id)
+        workspace_config = workspace.config if isinstance(workspace.config, dict) else {}
+        user_inputs = [
+            str(step["payload"].get("message") or "").strip()
+            for step in self.repository.list_agent_steps(run.id)
+            if step.get("kind") == "user_input" and isinstance(step.get("payload"), dict)
+        ]
+        task = run.task
+        if user_inputs:
+            task = f"{task}\n\nLatest user direction: {user_inputs[-1]}"
+        return CodeBriefCompiler().compile(
+            task=task,
+            project_context=project_context,
+            cognitive_context=cognitive,
+            test_commands=workspace_config.get("test_commands") or (),
+        )
+
+    def _execute_code_foundry(self, run, *, route: str) -> CodeRunOutcome:
+        brief = self._code_foundry_brief(run)
+        registry = CodeActionRegistry()
+        executor: Any = KernelCodeActionExecutor(
+            self.kernel,
+            workspace_id=run.workspace_id,
+            actor=run.actor,
+            registry=registry,
+            mode=run.mode,
+            # CodeFoundry owns an evidence-gated, production coding loop. The
+            # user selected autonomous production execution for this program.
+            auto_confirm=True,
+        )
+        if route == "shadow":
+            executor = _ReadOnlyShadowExecutor(executor)
+        max_turns = min(
+            self.hard_step_limit,
+            max(1, int(run.max_steps)),
+            8 if route == "shadow" else self.hard_step_limit,
+        )
+        loop = CodeFoundryLoop(
+            model=AgentProviderCodeAdapter(self.provider, registry=registry),
+            runtime=CodeRuntime(executor),
+            registry=registry,
+            max_turns=max_turns,
+            event_sink=AgentStoreCodeRunSink(self.repository, run.id),
+        )
+        self.repository.append_agent_step(
+            run.id,
+            "code_foundry.route_started",
+            {
+                "mode": route,
+                "authoritative": route == "on",
+                "max_turns": max_turns,
+                "brief": brief.public_dict(),
+            },
+        )
+        return _run_async_safely(loop.run(brief))
+
+    def _project_code_foundry_result(self, run, outcome: CodeRunOutcome) -> dict[str, Any]:
+        result = outcome.result
+        statuses = {
+            CodeResultStatus.VERIFIED: (AgentRunStatus.SUCCEEDED, "code_foundry_verified", "completed", None),
+            CodeResultStatus.NEEDS_INPUT: (AgentRunStatus.WAITING_INPUT, "code_foundry_needs_input", "waiting_input", None),
+            CodeResultStatus.FAILED: (AgentRunStatus.FAILED, "code_foundry_failed", "blocked", result.summary),
+            CodeResultStatus.UNVERIFIED: (
+                AgentRunStatus.PARTIALLY_COMPLETED,
+                "code_foundry_unverified",
+                "incomplete",
+                result.summary,
+            ),
+        }
+        status, response_status, goal_status, warning = statuses[result.status]
+        self.repository.append_agent_step(
+            run.id,
+            "code_foundry.route_completed",
+            {
+                "mode": "on",
+                "authoritative": True,
+                "status": result.status.value,
+                "summary": result.summary,
+                "changed_paths": list(result.changed_paths),
+                "evidence_ids": list(result.evidence_ids),
+                "blockers": list(result.blockers),
+                "turns": outcome.turns,
+            },
+        )
+        self.repository.update_agent_run(
+            run.id,
+            status=status,
+            current_step=min(self.hard_step_limit, int(run.current_step) + outcome.turns),
+            final_message=result.summary,
+            pending_operation_id=None,
+            execution_status="succeeded" if result.status is CodeResultStatus.VERIFIED else "not_verified",
+            response_status=response_status,
+            goal_status=goal_status,
+            warning=warning,
+            auto_confirm=False,
+            auto_scope={},
+        )
+        return self._engineering_sync(run.id, self.snapshot(run.id))
 
     def start(
         self,
@@ -197,6 +454,31 @@ class AdaptiveEngineeringMixin:
             return self._engineering_sync(run_id, self.snapshot(run_id))
         if run.status == AgentRunStatus.WAITING_INPUT:
             return self._engineering_sync(run_id, self.snapshot(run_id))
+
+        route = self._code_foundry_route(run)
+        if route == "on":
+            outcome = self._execute_code_foundry(run, route=route)
+            return self._project_code_foundry_result(run, outcome)
+        if route == "shadow" and not any(
+            step.get("kind") == "code_foundry.shadow_completed"
+            for step in self.repository.list_agent_steps(run_id)
+        ):
+            outcome = self._execute_code_foundry(run, route=route)
+            result = outcome.result
+            self.repository.append_agent_step(
+                run_id,
+                "code_foundry.shadow_completed",
+                {
+                    "authoritative": False,
+                    "status": result.status.value,
+                    "summary": result.summary,
+                    "changed_paths": list(result.changed_paths),
+                    "evidence_ids": list(result.evidence_ids),
+                    "blockers": list(result.blockers),
+                    "turns": outcome.turns,
+                    "note": "Shadow mode withheld CodeFoundry workspace mutations; the legacy result remains authoritative.",
+                },
+            )
 
         if run.pending_operation_id:
             pending = self.kernel.snapshot(run.pending_operation_id)

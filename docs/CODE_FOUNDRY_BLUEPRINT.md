@@ -433,22 +433,25 @@ Existing files remain responsible for their current concern:
 Implemented now: typed actions and evidence, bounded/invalidation-aware history,
 parallel read execution, Kernel Receipts, a deterministic fresh-diff review,
 the existing LightHouse JSON provider bridge, durable AgentStore lifecycle
-events, and three traceable Apache-2.0 algorithm adaptations. These are native
-LightHouse modules; no Codex process is launched.
+events, three traceable Apache-2.0 algorithm adaptations, and the live
+`engineering.py` feature-flag route. These are native LightHouse modules; no
+Codex process is launched.
 
 目前已完成：型別化 action/evidence、可截斷與可失效的 history、平行讀取、
 Kernel Receipt、重新讀取 diff 的決定性 review、既有 LightHouse JSON provider
-bridge、可持久化的 AgentStore 生命週期事件，以及三個可追溯的 Apache-2.0 演算法
-改造。它們全是原生 LightHouse 模組，不會啟動 Codex 程序。
+bridge、可持久化的 AgentStore 生命週期事件、三個可追溯的 Apache-2.0 演算法改造，
+以及已接入 `engineering.py` 的 feature flag 路由。它們全是原生 LightHouse 模組，
+不會啟動 Codex 程序。
 
-Still required before default production routing: frozen repository fixtures and
-comparative metrics, live routing from `engineering.py` behind a feature flag,
-and a resumable mid-turn recovery policy. Those are rollout/integration work,
-not missing Codex runtime dependencies.
+`LIGHTHOUSE_CODE_FOUNDRY_MODE` accepts `off` (default), `shadow`, or `on`.
+`on` makes matching coding tasks use CodeFoundry as the authoritative production
+loop; `shadow` records a bounded read-only CodeFoundry candidate and retains the
+legacy loop as authoritative. Non-coding tasks and unsupported kernel modes
+stay on the existing route, with a durable reason.
 
-預設進入正式路由前仍需：固定的 repository fixtures 與比較指標、由 feature flag
-控制的 `engineering.py` 實際路由，以及可從中斷回合恢復的政策。這些是 rollout／
-整合作業，不是缺少 Codex 執行期依賴。
+預設成為所有 coding run 的正式路由前，仍需：固定的 repository fixtures 與比較
+指標，以及可從中斷回合恢復的政策。這些是 rollout／整合作業，不是缺少 Codex
+執行期依賴。
 
 ## 14. Delivery sequence
 
@@ -500,6 +503,11 @@ and produce a complete evidence graph using only native CodeFoundry contracts.
 - Implement the CodeFoundry turn loop, action-batch parser, retries, and
 pre-sampling compaction.
 - Route coding tasks through a feature flag: `off`, `shadow`, then `on`.
+
+**Implementation status:** complete. The flag is configured by
+`LIGHTHOUSE_CODE_FOUNDRY_MODE` or `code_foundry_mode` in the local LightHouse
+configuration. `shadow` deliberately blocks CodeFoundry workspace mutations;
+`on` is the evidence-gated, authoritative route.
 
 **Exit condition:** `shadow` runs produce complete transcripts and evidence
 without changing the authoritative legacy result; `on` completes selected

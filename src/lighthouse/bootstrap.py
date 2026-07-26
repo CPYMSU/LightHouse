@@ -203,6 +203,7 @@ def build_brain(settings: Settings, kernel: OperationKernel) -> MegaProjectLight
     brain.usage_store = usage_store
     brain.mega_projects = project_store
     brain.massive_build = massive_build
+    brain.code_foundry_mode = settings.code_foundry_mode
 
     try:
         requested_workers = int(os.getenv("LIGHTHOUSE_AGENT_WORKERS", "8"))
