@@ -6,11 +6,13 @@ from .agent_coordination import build_shared_cognitive_brief
 from .agent_results import AgentResultFusionMixin
 from .cognitive import CognitiveContinuityMixin
 from .engineering import AdaptiveEngineeringMixin
+from .execution_observability import AgentExecutionContextMixin
 from .neuron_brain import NeuronAwareLightHouseBrain
 from .work_intensity import WorkIntensityMixin
 
 
 class MegaProjectLightHouseBrain(
+    AgentExecutionContextMixin,
     WorkIntensityMixin,
     AgentResultFusionMixin,
     CognitiveContinuityMixin,
