@@ -10,7 +10,7 @@ from typing import Any
 from . import cli as legacy
 from . import terminal as base
 from . import terminal_v2 as durable
-from .ui_v12 import ObservatoryTerminal
+from .execution_observability import ExecutionObservatoryTerminal as ObservatoryTerminal
 from .work_intensity import normalize_intensity, resolve_intensity
 
 
