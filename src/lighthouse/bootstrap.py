@@ -12,6 +12,7 @@ from .capabilities import CapabilityRegistry, DEFAULT_CAPABILITIES
 from .config import Settings
 from .data_capabilities import DATA_KERNEL_CAPABILITIES
 from .data_kernel import DataTargetResolver, PostgresDataCatalog
+from .engineering import StructuredOpenAICompatibleProvider
 from .executors import (
     DesktopExecutor,
     ElasticAgentBusExecutor,
@@ -34,7 +35,7 @@ from .memory_search import PostgresMemoryFabric
 from .model_usage import PostgresModelUsageStore
 from .neuron_adaptation import AdaptivePostgresNeuronRuntime
 from .neuron_runtime import NeuronReflexWorker
-from .provider import DisabledProvider, OpenAICompatibleProvider
+from .provider import DisabledProvider
 from .repository import PostgresRepository
 from .research_capabilities import RESEARCH_CAPABILITIES
 from .scalable_agent_bus import ScalablePostgresAgentBus
@@ -142,7 +143,7 @@ def build_kernel(settings: Settings, *, migrate: bool = True) -> OperationKernel
 def build_brain(settings: Settings, kernel: OperationKernel) -> MegaProjectLightHouseBrain:
     usage_store = getattr(kernel, "usage_store", None) or PostgresModelUsageStore(settings.database_url)
     if settings.model and settings.model_base_url and settings.model_api_key:
-        provider = OpenAICompatibleProvider(
+        provider = StructuredOpenAICompatibleProvider(
             base_url=settings.model_base_url,
             api_key=settings.model_api_key,
             model=settings.model,

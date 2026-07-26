@@ -1,10 +1,11 @@
 from __future__ import annotations
 
+from .engineering import AdaptiveEngineeringMixin
 from .neuron_brain import NeuronAwareLightHouseBrain
 from .provider import AgentDecision
 
 
-class MegaProjectLightHouseBrain(NeuronAwareLightHouseBrain):
+class MegaProjectLightHouseBrain(AdaptiveEngineeringMixin, NeuronAwareLightHouseBrain):
     """Main AI that may freely compose tools and elastic Agents for large work."""
 
     def _dispatch_tool(self, run, decision, step_number: int):
