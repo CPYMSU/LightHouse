@@ -6,10 +6,11 @@ from typing import Any
 
 from .agent_adapter import AgentRepositoryAdapter
 from .agent_capabilities import AGENT_BUS_CAPABILITIES
+from .agent_registry import AgentBus2Registry
+from .agent_results import AgentBusStructuredProvider
 from .agent_store import PostgresAgentStore
 from .background_intelligence import BackgroundIntelligenceWorker
 from .capabilities import CapabilityRegistry, DEFAULT_CAPABILITIES
-from .cognitive import CognitiveStructuredProvider
 from .config import Settings
 from .data_capabilities import DATA_KERNEL_CAPABILITIES
 from .data_kernel import DataTargetResolver, PostgresDataCatalog
@@ -38,7 +39,6 @@ from .neuron_runtime import NeuronReflexWorker
 from .provider import DisabledProvider
 from .repository import PostgresRepository
 from .research_capabilities import RESEARCH_CAPABILITIES
-from .scalable_agent_bus import ScalablePostgresAgentBus
 from .tool_registry import PostgresToolRegistry
 
 
@@ -76,7 +76,7 @@ def build_kernel(settings: Settings, *, migrate: bool = True) -> OperationKernel
         repository.migrate(migration_sql())
     catalog = PostgresDataCatalog(settings.database_url)
     memory = PostgresMemoryFabric(settings.database_url)
-    agent_bus = ScalablePostgresAgentBus(settings.database_url)
+    agent_bus = AgentBus2Registry(settings.database_url)
     neuron_runtime = AdaptivePostgresNeuronRuntime(settings.database_url)
     tool_registry = PostgresToolRegistry(settings.database_url)
     project_store = PostgresMegaProjectStore(settings.database_url)
@@ -143,7 +143,7 @@ def build_kernel(settings: Settings, *, migrate: bool = True) -> OperationKernel
 def build_brain(settings: Settings, kernel: OperationKernel) -> MegaProjectLightHouseBrain:
     usage_store = getattr(kernel, "usage_store", None) or PostgresModelUsageStore(settings.database_url)
     if settings.model and settings.model_base_url and settings.model_api_key:
-        provider = CognitiveStructuredProvider(
+        provider = AgentBusStructuredProvider(
             base_url=settings.model_base_url,
             api_key=settings.model_api_key,
             model=settings.model,
@@ -160,7 +160,7 @@ def build_brain(settings: Settings, kernel: OperationKernel) -> MegaProjectLight
         kernel.repository,
     )
     memory = getattr(kernel, "memory", None) or PostgresMemoryFabric(settings.database_url)
-    agent_bus = getattr(kernel, "agent_bus", None) or ScalablePostgresAgentBus(settings.database_url)
+    agent_bus = getattr(kernel, "agent_bus", None) or AgentBus2Registry(settings.database_url)
     neuron_runtime = getattr(kernel, "neuron_runtime", None) or AdaptivePostgresNeuronRuntime(settings.database_url)
     tool_registry = getattr(kernel, "tool_registry", None) or PostgresToolRegistry(settings.database_url)
     project_store = getattr(kernel, "mega_projects", None) or PostgresMegaProjectStore(settings.database_url)
