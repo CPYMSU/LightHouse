@@ -7,6 +7,13 @@ from .agent_coordination import execution_profile_for_role
 from .scalable_agent_bus import ScalablePostgresAgentBus
 
 
+_ROLE_ALIASES = {
+    "design": "architecture",
+    "coding": "backend",
+    "verification": "wiring-verification",
+}
+
+
 class AgentBus2Registry(ScalablePostgresAgentBus):
     """Concrete Agent Bus with one clear, code-capable professional registry."""
 
@@ -17,15 +24,9 @@ class AgentBus2Registry(ScalablePostgresAgentBus):
             "role": "architecture",
             "specialty": "System boundaries, module relationships, entropy reduction and refactor tradeoffs",
             "capabilities": [
-                "system.project.context.v1",
-                "system.file.search.v1",
-                "system.file.read.v1",
-                "system.git.status.v1",
-                "system.git.diff.v1",
-                "tools.search.v1",
-                "tools.inspect.v1",
-                "project.contract.inspect.v1",
-                "project.finding.store.v1",
+                "system.project.context.v1", "system.file.search.v1", "system.file.read.v1",
+                "system.git.status.v1", "system.git.diff.v1", "tools.search.v1",
+                "tools.inspect.v1", "project.contract.inspect.v1", "project.finding.store.v1",
             ],
             "quality_profile": {"entropy_reduction": True, "alternative_analysis": True},
             "max_concurrency": 4,
@@ -36,14 +37,9 @@ class AgentBus2Registry(ScalablePostgresAgentBus):
             "role": "data",
             "specialty": "Schema, SQL, data consistency, transactions and query performance",
             "capabilities": [
-                "system.project.context.v1",
-                "system.file.search.v1",
-                "system.file.read.v1",
-                "system.git.diff.v1",
-                "system.test.run.v1",
-                "data.schema.inspect.v1",
-                "data.sql.query.v1",
-                "data.sql.exec.v1",
+                "system.project.context.v1", "system.file.search.v1", "system.file.read.v1",
+                "system.git.diff.v1", "system.test.run.v1", "data.schema.inspect.v1",
+                "data.sql.query.v1", "data.sql.exec.v1",
             ],
             "quality_profile": {"transaction_evidence": True, "data_consistency": True},
             "max_concurrency": 4,
@@ -54,14 +50,9 @@ class AgentBus2Registry(ScalablePostgresAgentBus):
             "role": "security",
             "specialty": "Authorization, secrets, injection, data exposure and destructive-operation review",
             "capabilities": [
-                "system.project.context.v1",
-                "system.file.search.v1",
-                "system.file.read.v1",
-                "system.git.diff.v1",
-                "system.test.run.v1",
-                "data.schema.inspect.v1",
-                "data.sql.query.v1",
-                "project.finding.store.v1",
+                "system.project.context.v1", "system.file.search.v1", "system.file.read.v1",
+                "system.git.diff.v1", "system.test.run.v1", "data.schema.inspect.v1",
+                "data.sql.query.v1", "project.finding.store.v1",
             ],
             "quality_profile": {"least_authority": True, "secret_detection": True},
             "max_concurrency": 4,
@@ -72,14 +63,9 @@ class AgentBus2Registry(ScalablePostgresAgentBus):
             "role": "reality",
             "specialty": "Real files, active entry points, Git state, services and environment evidence",
             "capabilities": [
-                "system.project.context.v1",
-                "system.file.search.v1",
-                "system.file.read.v1",
-                "system.git.status.v1",
-                "system.git.diff.v1",
-                "system.service.status.v1",
-                "system.journal.read.v1",
-                "project.finding.store.v1",
+                "system.project.context.v1", "system.file.search.v1", "system.file.read.v1",
+                "system.git.status.v1", "system.git.diff.v1", "system.service.status.v1",
+                "system.journal.read.v1", "project.finding.store.v1",
             ],
             "quality_profile": {"reality_first": True, "no_invented_state": True},
             "max_concurrency": 6,
@@ -90,15 +76,9 @@ class AgentBus2Registry(ScalablePostgresAgentBus):
             "role": "release",
             "specialty": "Versioning, installers, CI, release contracts and deployment evidence",
             "capabilities": [
-                "system.project.context.v1",
-                "system.file.search.v1",
-                "system.file.read.v1",
-                "system.file.patch.v1",
-                "system.git.status.v1",
-                "system.git.diff.v1",
-                "system.test.run.v1",
-                "system.service.status.v1",
-                "system.service.restart.v1",
+                "system.project.context.v1", "system.file.search.v1", "system.file.read.v1",
+                "system.file.patch.v1", "system.git.status.v1", "system.git.diff.v1",
+                "system.test.run.v1", "system.service.status.v1", "system.service.restart.v1",
             ],
             "quality_profile": {"cross_platform": True, "release_receipts": True},
             "max_concurrency": 2,
@@ -107,11 +87,11 @@ class AgentBus2Registry(ScalablePostgresAgentBus):
 
     def register_builtin_agents(self) -> None:
         super().register_builtin_agents()
-        # These legacy generic model Agents had no tools and overlapped the
-        # professional roles. Keep historical rows, but remove them from routing.
+        # Keep historical rows and legacy scripted registration compatible, but
+        # remove the three tool-less generic Agents from Agent Bus 2.0 routing.
         with self._connect() as connection:
             connection.execute(
-                """UPDATE lh_agents SET active=FALSE,health='offline',updated_at=now()
+                """UPDATE lh_agents SET active=FALSE,updated_at=now()
                    WHERE name IN ('design-agent','coding-agent','verification-agent')"""
             )
             rows = connection.execute(
@@ -148,3 +128,13 @@ class AgentBus2Registry(ScalablePostgresAgentBus):
                        quality_profile=%s::jsonb,updated_at=now() WHERE id=%s""",
                     (display_name, specialty, _json(quality_profile), agent["id"]),
                 )
+
+    def dispatch(self, *, role: str, **kwargs: Any) -> dict[str, Any]:
+        requested_role = str(role or "").strip()
+        mapped = _ROLE_ALIASES.get(requested_role, requested_role)
+        payload = dict(kwargs.get("payload") or {}) if isinstance(kwargs.get("payload"), dict) else {}
+        if mapped != requested_role:
+            payload.setdefault("legacy_role_alias", requested_role)
+            payload.setdefault("resolved_role", mapped)
+        values = {key: value for key, value in kwargs.items() if key != "payload"}
+        return super().dispatch(role=mapped, payload=payload, **values)
