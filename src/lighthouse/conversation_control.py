@@ -34,7 +34,7 @@ def install_terminal_hooks(base: Any, terminal: Any) -> None:
         )
         if cleared_active_conversation:
             config[PENDING_NEW_CONVERSATION_KEY] = True
-        original_save(config)
+        original_save(dict(config))
 
     def run_task_with_new_intent(*args: Any, **kwargs: Any) -> int:
         config = kwargs.get("config")
@@ -47,7 +47,7 @@ def install_terminal_hooks(base: Any, terminal: Any) -> None:
         result = original_run_task(*args, **kwargs)
         if pending:
             config.pop(PENDING_NEW_CONVERSATION_KEY, None)
-            original_save(config)
+            original_save(dict(config))
         return result
 
     base._save = save_with_new_intent
