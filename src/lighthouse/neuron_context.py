@@ -59,7 +59,8 @@ class NeuronAwareContextCompiler(ContextCompiler):
         bundle["neuron_field"] = neural_context
         bundle["snapshot"] = {
             **(bundle.get("snapshot") or {}),
-            "neuron_source": "persistent_background_snapshot",
+            "neuron_source": "background_snapshot",
+            "neuron_persistence": "postgres_cross_session",
             "neuron_control_applied": True,
         }
         return bundle
