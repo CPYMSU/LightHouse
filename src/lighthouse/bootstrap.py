@@ -9,10 +9,10 @@ from .agent_capabilities import AGENT_BUS_CAPABILITIES
 from .agent_store import PostgresAgentStore
 from .background_intelligence import BackgroundIntelligenceWorker
 from .capabilities import CapabilityRegistry, DEFAULT_CAPABILITIES
+from .cognitive import CognitiveStructuredProvider
 from .config import Settings
 from .data_capabilities import DATA_KERNEL_CAPABILITIES
 from .data_kernel import DataTargetResolver, PostgresDataCatalog
-from .engineering import StructuredOpenAICompatibleProvider
 from .executors import (
     DesktopExecutor,
     ElasticAgentBusExecutor,
@@ -143,7 +143,7 @@ def build_kernel(settings: Settings, *, migrate: bool = True) -> OperationKernel
 def build_brain(settings: Settings, kernel: OperationKernel) -> MegaProjectLightHouseBrain:
     usage_store = getattr(kernel, "usage_store", None) or PostgresModelUsageStore(settings.database_url)
     if settings.model and settings.model_base_url and settings.model_api_key:
-        provider = StructuredOpenAICompatibleProvider(
+        provider = CognitiveStructuredProvider(
             base_url=settings.model_base_url,
             api_key=settings.model_api_key,
             model=settings.model,
