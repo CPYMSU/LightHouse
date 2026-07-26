@@ -235,6 +235,20 @@ class AgentRuntime:
                 status=AgentRunStatus.RUNNING,
             )
 
+            if decision.kind == "memory_expand":
+                depth = str((decision.arguments or {}).get("depth") or "focused")
+                self.repository.append_agent_step(
+                    run_id,
+                    "memory_context_expanded",
+                    {
+                        "step": next_step,
+                        "depth": depth,
+                        "reason": decision.reason,
+                        "source": "model_requested_progressive_memory",
+                    },
+                )
+                continue
+
             if decision.kind == "final":
                 self.repository.append_agent_step(
                     run_id,
@@ -568,7 +582,10 @@ class AgentRuntime:
             "Return exactly one JSON object and no prose. Allowed objects are: "
             '{"kind":"tool","capability":"exact.name","arguments":{},"reason":"brief"}, '
             '{"kind":"final","message":"verified result","reason":"brief"}, or '
-            '{"kind":"ask","message":"specific question","reason":"brief"}. '
+            '{"kind":"ask","message":"specific question","reason":"brief"}, or '
+            '{"kind":"memory_expand","arguments":{"depth":"focused|deep"},"reason":"what is missing"}. '
+            "Every run begins with a compact memory index. Before asking the user about prior work, "
+            "request memory_expand when the index lacks the necessary history or evidence. "
             "Capability atlas: "
             + json.dumps(atlas, ensure_ascii=False, separators=(",", ":"))
         )

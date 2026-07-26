@@ -58,7 +58,13 @@ def parse_decision(value: Any) -> AgentDecision:
         if not message:
             raise AgentProtocolError(f"{kind} decision requires message")
         return AgentDecision(kind=kind, reason=reason, message=message)
-    raise AgentProtocolError("model decision kind must be tool, final or ask")
+    if kind == "memory_expand":
+        arguments = value.get("arguments") if isinstance(value.get("arguments"), dict) else {}
+        depth = str(arguments.get("depth") or value.get("depth") or "").strip().lower()
+        if depth not in {"focused", "deep"}:
+            raise AgentProtocolError("memory_expand requires arguments.depth of focused or deep")
+        return AgentDecision(kind=kind, reason=reason, arguments={"depth": depth})
+    raise AgentProtocolError("model decision kind must be tool, final, ask or memory_expand")
 
 
 def _message_text(message: dict[str, Any]) -> str:

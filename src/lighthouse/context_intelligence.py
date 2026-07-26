@@ -6,6 +6,11 @@ import json
 from typing import Any
 from uuid import uuid4
 
+from .memory_resolution import (
+    compact_memory_context,
+    memory_resolution_policy,
+    normalize_memory_depth,
+)
 from .models import canonical_json
 
 
@@ -35,14 +40,18 @@ class ContextCompiler:
         force: bool = False,
         turn_limit: int = 8,
         file_limit: int = 16,
+        memory_depth: str = "focused",
     ) -> dict[str, Any]:
         query = str(query or "").strip()
-        query_hash = hashlib.sha256(query.encode("utf-8")).hexdigest()
+        depth = normalize_memory_depth(memory_depth, default="focused")
+        policy = memory_resolution_policy(depth)
+        query_hash = hashlib.sha256(f"{depth}\0{query}".encode("utf-8")).hexdigest()
         source_cursor = self._source_cursor(
             workspace_id=workspace_id,
             conversation_id=conversation_id,
             run_id=run_id,
             query_hash=query_hash,
+            memory_depth=depth,
         )
         if not force:
             cached = self._cached(
@@ -65,14 +74,24 @@ class ContextCompiler:
             actor=actor,
             conversation_id=conversation_id,
             query=query,
-            message_limit=max(16, turn_limit * 3),
-            file_limit=file_limit,
+            # Retrieval may inspect the durable index, but the prompt boundary
+            # is fixed by the selected memory tier rather than a broad caller
+            # limit or the neuron recommendation.
+            message_limit=max(2, policy.turn_limit * 2),
+            file_limit=min(max(1, int(file_limit)), policy.file_limit),
+            memory_depth=depth,
         )
         candidates = self._candidate_entities(memory)
-        facts = self._verified_facts(workspace_id=workspace_id, memory=memory)
+        facts = self._verified_facts(
+            workspace_id=workspace_id,
+            memory=memory,
+            limit=policy.fact_limit,
+        )
         inferences, uncertainties = self._semantic_state(
             workspace_id=workspace_id,
             conversation_id=conversation_id,
+            inference_limit=policy.inference_limit,
+            uncertainty_limit=policy.uncertainty_limit,
         )
         work_orders = self.agent_bus.list_work_orders(
             workspace_id=workspace_id,
@@ -80,7 +99,15 @@ class ContextCompiler:
             limit=20,
         )
         agents = self.agent_bus.list_agents(include_hidden=True)
-        summary = memory.get("conversation_summary") or {}
+        compact_memory = compact_memory_context(
+            memory,
+            depth=depth,
+            candidates=candidates,
+            facts=facts,
+            inferences=inferences,
+            uncertainties=uncertainties,
+        )
+        summary = compact_memory.get("conversation_summary") or {}
         distillation_level = max(
             1,
             int(summary.get("distillation_level") or 0),
@@ -89,27 +116,32 @@ class ContextCompiler:
         bundle: dict[str, Any] = {
             "available": True,
             "current_request": {"content": query},
-            "recent_turns": (memory.get("recent_turns") or [])[-max(1, min(int(turn_limit), 16)):],
+            "recent_turns": compact_memory["recent_turns"],
             "conversation_summary": summary,
-            "active_task": memory.get("active_task"),
-            "recent_tasks": memory.get("recent_tasks") or [],
-            "candidate_entities": candidates,
-            "verified_facts": facts,
-            "inferences": inferences,
-            "uncertainties": uncertainties,
-            "relevant_files": memory.get("relevant_files") or [],
-            "recent_locators": memory.get("recent_locators") or [],
+            "active_task": compact_memory["active_task"],
+            "recent_tasks": compact_memory["recent_tasks"],
+            "candidate_entities": compact_memory["candidate_entities"],
+            "verified_facts": compact_memory["verified_facts"],
+            "inferences": compact_memory["inferences"],
+            "uncertainties": compact_memory["uncertainties"],
+            "relevant_files": compact_memory["relevant_files"],
+            "recent_locators": compact_memory["recent_locators"],
+            "memory_index": compact_memory["memory_index"],
             "available_agents": agents,
             "work_orders": work_orders,
             "distillation": {
                 "level": distillation_level,
-                "foreground_source": "context_snapshot",
+                "foreground_source": "memory_resolution_capsule",
                 "background_upgrade_pending": distillation_level < 2,
+                "memory_depth": depth,
             },
             "snapshot": {
                 "cache": "miss",
                 "source_cursor": source_cursor,
                 "compiled_at": _utc_now().isoformat(),
+                "memory_depth": depth,
+                "requested_turn_limit": int(turn_limit),
+                "requested_file_limit": int(file_limit),
             },
         }
         self._store_snapshot(
@@ -154,6 +186,7 @@ class ContextCompiler:
         conversation_id: str | None,
         run_id: str | None,
         query_hash: str,
+        memory_depth: str,
     ) -> str:
         with self.memory._connect() as connection:
             message = None
@@ -189,6 +222,7 @@ class ContextCompiler:
                 ).fetchone()
         value = {
             "query": query_hash,
+            "memory_depth": memory_depth,
             "message": dict(message) if message else None,
             "task": {**dict(task), "updated_at": _iso(task.get("updated_at"))} if task else None,
             "summary": {**dict(summary), "updated_at": _iso(summary.get("updated_at"))} if summary else None,
@@ -295,13 +329,19 @@ class ContextCompiler:
             add(str(item.get("kind") or "locator"), str(item.get("canonical_value") or ""), "recent_locator", max(0.25, 0.7 - index * 0.02))
         return sorted(values.values(), key=lambda item: (-float(item["confidence"]), item["locator"]))[:24]
 
-    def _verified_facts(self, *, workspace_id: str, memory: dict[str, Any]) -> list[dict[str, Any]]:
-        facts: list[dict[str, Any]] = []
+    def _verified_facts(
+        self,
+        *,
+        workspace_id: str,
+        memory: dict[str, Any],
+        limit: int = 16,
+    ) -> list[dict[str, Any]]:
+        file_facts: list[dict[str, Any]] = []
         for item in memory.get("relevant_files") or []:
             path = str(item.get("canonical_path") or "")
             if not path:
                 continue
-            facts.extend(
+            file_facts.extend(
                 [
                     {
                         "fact": "indexed_file",
@@ -330,9 +370,10 @@ class ContextCompiler:
                    LEFT JOIN lh_world_entities e ON e.id=f.entity_id
                    WHERE f.workspace_id=%s
                      AND (f.valid_until IS NULL OR f.valid_until > now())
-                   ORDER BY f.observed_at DESC LIMIT 40""",
-                (workspace_id,),
+                   ORDER BY f.observed_at DESC LIMIT %s""",
+                (workspace_id, max(1, min(int(limit), 64))),
             ).fetchall()
+        facts: list[dict[str, Any]] = []
         for row in rows:
             facts.append(
                 {
@@ -349,13 +390,19 @@ class ContextCompiler:
                     "freshness": "verified",
                 }
             )
-        return facts[:64]
+        # Distilled world facts answer prior decisions and user preferences;
+        # file-index facts remain useful grounding but must not crowd those
+        # higher-value memory records out of the index tier.
+        facts.extend(file_facts)
+        return facts[: max(1, min(int(limit), 64))]
 
     def _semantic_state(
         self,
         *,
         workspace_id: str,
         conversation_id: str | None,
+        inference_limit: int = 8,
+        uncertainty_limit: int = 8,
     ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
         with self.memory._connect() as connection:
             inferences = connection.execute(
@@ -364,8 +411,8 @@ class ContextCompiler:
                    WHERE workspace_id=%s
                      AND conversation_id IS NOT DISTINCT FROM %s
                      AND (expires_at IS NULL OR expires_at > now())
-                   ORDER BY created_at DESC LIMIT 24""",
-                (workspace_id, conversation_id),
+                   ORDER BY created_at DESC LIMIT %s""",
+                (workspace_id, conversation_id, max(1, min(int(inference_limit), 32))),
             ).fetchall()
             uncertainties = connection.execute(
                 """SELECT id,question,severity,status,evidence,created_at,updated_at
@@ -373,8 +420,8 @@ class ContextCompiler:
                    WHERE workspace_id=%s
                      AND conversation_id IS NOT DISTINCT FROM %s
                      AND status='open'
-                   ORDER BY updated_at DESC LIMIT 16""",
-                (workspace_id, conversation_id),
+                   ORDER BY updated_at DESC LIMIT %s""",
+                (workspace_id, conversation_id, max(1, min(int(uncertainty_limit), 32))),
             ).fetchall()
         return (
             [

@@ -380,6 +380,7 @@ def compile_cognitive_projection(
             "uncertainties": context.get("uncertainties") or [],
             "relevant_files": context.get("relevant_files") or [],
             "recent_locators": context.get("recent_locators") or [],
+            "memory_index": context.get("memory_index"),
             "distillation": context.get("distillation"),
             "snapshot": context.get("snapshot"),
             "persistent_world_complete": True,
