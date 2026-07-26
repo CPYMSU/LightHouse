@@ -66,6 +66,7 @@ def migration_sql() -> str:
             "0006_tool_registry_mega_projects.sql",
             "0007_agent_observatory_massive_build.sql",
             "0008_operation_event_sequence.sql",
+            "0009_persistent_emergent_personality.sql",
         )
     )
 
@@ -141,7 +142,9 @@ def build_kernel(settings: Settings, *, migrate: bool = True) -> OperationKernel
 
 
 def build_brain(settings: Settings, kernel: OperationKernel) -> MegaProjectLightHouseBrain:
-    usage_store = getattr(kernel, "usage_store", None) or PostgresModelUsageStore(settings.database_url)
+    usage_store = getattr(kernel, "usage_store", None) or PostgresModelUsageStore(
+        settings.database_url
+    )
     if settings.model and settings.model_base_url and settings.model_api_key:
         provider = IntensityAwareAgentBusProvider(
             base_url=settings.model_base_url,
@@ -159,15 +162,29 @@ def build_brain(settings: Settings, kernel: OperationKernel) -> MegaProjectLight
         PostgresAgentStore(settings.database_url),
         kernel.repository,
     )
-    memory = getattr(kernel, "memory", None) or PostgresMemoryFabric(settings.database_url)
-    agent_bus = getattr(kernel, "agent_bus", None) or AgentBus2Registry(settings.database_url)
-    neuron_runtime = getattr(kernel, "neuron_runtime", None) or AdaptivePostgresNeuronRuntime(settings.database_url)
-    tool_registry = getattr(kernel, "tool_registry", None) or PostgresToolRegistry(settings.database_url)
-    project_store = getattr(kernel, "mega_projects", None) or PostgresMegaProjectStore(settings.database_url)
-    massive_build = getattr(kernel, "massive_build", None) or PostgresMassiveBuildStore(settings.database_url)
+    memory = getattr(kernel, "memory", None) or PostgresMemoryFabric(
+        settings.database_url
+    )
+    agent_bus = getattr(kernel, "agent_bus", None) or AgentBus2Registry(
+        settings.database_url
+    )
+    neuron_runtime = getattr(
+        kernel, "neuron_runtime", None
+    ) or AdaptivePostgresNeuronRuntime(settings.database_url)
+    tool_registry = getattr(kernel, "tool_registry", None) or PostgresToolRegistry(
+        settings.database_url
+    )
+    project_store = getattr(kernel, "mega_projects", None) or PostgresMegaProjectStore(
+        settings.database_url
+    )
+    massive_build = getattr(
+        kernel, "massive_build", None
+    ) or PostgresMassiveBuildStore(settings.database_url)
     agent_bus.register_builtin_agents()
     memory.bind_agent_bus(agent_bus)
-    context_compiler = getattr(kernel, "context_compiler", None) or MegaProjectContextCompiler(
+    context_compiler = getattr(
+        kernel, "context_compiler", None
+    ) or MegaProjectContextCompiler(
         memory,
         agent_bus,
         neuron_runtime,

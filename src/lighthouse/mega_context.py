@@ -28,6 +28,21 @@ class MegaProjectContextCompiler(NeuronAwareContextCompiler):
         conversation_id = str(kwargs.get("conversation_id") or "") or None
         run_id = str(kwargs.get("run_id") or "") or None
         query = str(kwargs.get("query") or "")
+        neural = (
+            bundle.get("neuron_field")
+            if isinstance(bundle.get("neuron_field"), dict)
+            else {}
+        )
+        control = (
+            neural.get("cognitive_control")
+            if isinstance(neural.get("cognitive_control"), dict)
+            else {}
+        )
+        tool_limit = max(6, min(32, int(control.get("candidate_count") or 20)))
+        planning_depth = max(
+            0.0, min(float(control.get("planning_depth", 0.5)), 1.0)
+        )
+        project_scale = 0.6 + 0.8 * planning_depth
 
         try:
             project = self.project_store.active_project(
@@ -46,9 +61,14 @@ class MegaProjectContextCompiler(NeuronAwareContextCompiler):
                 workspace_id=workspace_id,
                 run_id=run_id,
                 project_id=project_id,
-                limit=20,
+                limit=tool_limit,
             )
             bundle["tool_context"]["categories"] = self.tool_registry.categories()
+            bundle["tool_context"]["neuron_control"] = {
+                "candidate_limit": tool_limit,
+                "source": "persistent_24_neuron_field",
+                "prompt_persona": False,
+            }
         except Exception as exc:
             bundle["tool_context"] = {
                 "recommendations": [],
@@ -69,8 +89,12 @@ class MegaProjectContextCompiler(NeuronAwareContextCompiler):
             observatory = {
                 "total": len(work_orders),
                 "active": sum(1 for item in work_orders if item.get("status") in active),
-                "queued": sum(1 for item in work_orders if item.get("status") == "queued"),
-                "completed": sum(1 for item in work_orders if item.get("status") in terminal),
+                "queued": sum(
+                    1 for item in work_orders if item.get("status") == "queued"
+                ),
+                "completed": sum(
+                    1 for item in work_orders if item.get("status") in terminal
+                ),
                 "items": work_orders,
             }
         bundle["agent_observatory"] = observatory
@@ -100,19 +124,32 @@ class MegaProjectContextCompiler(NeuronAwareContextCompiler):
                     if self.massive_build is not None
                     else {}
                 )
+                finding_limit = max(12, min(40, round(24 * project_scale)))
+                step_limit = max(20, min(64, round(40 * project_scale)))
+                decision_limit = max(8, min(24, round(12 * project_scale)))
                 bundle["project_director_brief"] = {
                     "project": project,
-                    "critical_findings": findings[:24],
-                    "current_steps": steps[:40],
-                    "recent_decisions": decisions[:12],
+                    "critical_findings": findings[:finding_limit],
+                    "current_steps": steps[:step_limit],
+                    "recent_decisions": decisions[:decision_limit],
                     "latest_checkpoint": detail.get("latest_checkpoint"),
-                    "build_cells": (massive.get("cells") or [])[:50],
-                    "contracts": (massive.get("contracts") or [])[:60],
-                    "active_write_leases": (massive.get("active_write_leases") or [])[:40],
-                    "recent_batches": (massive.get("batches") or [])[:40],
-                    "recent_integrations": (massive.get("integrations") or [])[:20],
-                    "worktrees": (massive.get("worktrees") or [])[:40],
-                    "wiring": (massive.get("wiring") or [])[:50],
+                    "build_cells": (massive.get("cells") or [])[
+                        : max(20, step_limit)
+                    ],
+                    "contracts": (massive.get("contracts") or [])[
+                        : max(24, step_limit)
+                    ],
+                    "active_write_leases": (massive.get("active_write_leases") or [])[
+                        :step_limit
+                    ],
+                    "recent_batches": (massive.get("batches") or [])[:step_limit],
+                    "recent_integrations": (massive.get("integrations") or [])[
+                        :finding_limit
+                    ],
+                    "worktrees": (massive.get("worktrees") or [])[:step_limit],
+                    "wiring": (massive.get("wiring") or [])[
+                        : max(20, finding_limit)
+                    ],
                     "counts": {
                         "findings": len(findings),
                         "steps": len(steps),
@@ -121,6 +158,11 @@ class MegaProjectContextCompiler(NeuronAwareContextCompiler):
                         "contracts": len(massive.get("contracts") or []),
                         "batches": len(massive.get("batches") or []),
                         "integrations": len(massive.get("integrations") or []),
+                    },
+                    "neuron_control": {
+                        "planning_depth": planning_depth,
+                        "project_scale": project_scale,
+                        "prompt_persona": False,
                     },
                     "fixed_workflow": False,
                     "main_ai_may_investigate_plan_execute_or_revise_freely": True,
@@ -147,7 +189,10 @@ class MegaProjectContextCompiler(NeuronAwareContextCompiler):
             **(bundle.get("snapshot") or {}),
             "tool_registry_source": "postgres",
             "mega_project_source": "postgres",
-            "massive_build_source": "postgres" if self.massive_build is not None else "unavailable",
+            "massive_build_source": (
+                "postgres" if self.massive_build is not None else "unavailable"
+            ),
             "agent_coordination_source": "postgres",
+            "neuron_tool_budget_applied": True,
         }
         return bundle

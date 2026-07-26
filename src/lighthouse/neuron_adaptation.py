@@ -4,6 +4,7 @@ import json
 from typing import Any, Mapping
 
 from .neuron_model import StimulusVector, _clip
+from .neuron_personality_runtime import PersistentPersonalityMixin
 from .neuron_runtime import PostgresNeuronRuntime
 
 
@@ -96,6 +97,53 @@ def encode_database_event(
         )
     if str(after.get("role") or "").lower() == "user":
         values.update(user_source=0.85, relationship_relevance=0.5)
+
+    interaction_value = payload.get("interaction_features")
+    interaction = interaction_value if isinstance(interaction_value, Mapping) else {}
+    approval = float(interaction.get("approval") or 0.0)
+    rejection = float(interaction.get("rejection") or 0.0)
+    correction = float(interaction.get("correction") or 0.0)
+    frustration = float(interaction.get("frustration") or 0.0)
+    continuation = float(interaction.get("continuation") or 0.0)
+    directness = float(interaction.get("directness") or 0.0)
+    if approval > 0:
+        values.update(
+            positive_valence=max(values.get("positive_valence", 0.0), approval),
+            reward_delta=max(values.get("reward_delta", 0.0), approval * 0.8),
+            trust_delta=max(values.get("trust_delta", 0.0), approval * 0.6),
+            cooperation=max(values.get("cooperation", 0.0), approval * 0.7),
+        )
+    if rejection > 0:
+        values.update(
+            negative_valence=max(values.get("negative_valence", 0.0), rejection),
+            loss_delta=max(values.get("loss_delta", 0.0), rejection * 0.55),
+            contradiction=max(values.get("contradiction", 0.0), rejection * 0.75),
+            relationship_relevance=max(values.get("relationship_relevance", 0.0), 0.7),
+        )
+    if correction > 0:
+        values.update(
+            information_gain=max(values.get("information_gain", 0.0), correction * 0.7),
+            contradiction=max(values.get("contradiction", 0.0), correction * 0.65),
+            semantic_density=max(values.get("semantic_density", 0.0), correction * 0.55),
+        )
+    if frustration > 0:
+        values.update(
+            emotional_intensity=max(values.get("emotional_intensity", 0.0), frustration),
+            negative_valence=max(values.get("negative_valence", 0.0), frustration * 0.8),
+            urgency=max(values.get("urgency", 0.0), frustration * 0.65),
+        )
+    if continuation > 0:
+        values.update(
+            cooperation=max(values.get("cooperation", 0.0), continuation * 0.8),
+            persistence=max(values.get("persistence", 0.0), continuation * 0.7),
+            goal_relevance=max(values.get("goal_relevance", 0.0), continuation * 0.65),
+        )
+    if directness > 0:
+        values.update(
+            actionability=max(values.get("actionability", 0.0), directness * 0.85),
+            short_horizon=max(values.get("short_horizon", 0.0), directness * 0.65),
+            urgency=max(values.get("urgency", 0.0), directness * 0.5),
+        )
     if "permission" in event or "authorization" in event:
         values.update(authority=0.7, threat=0.3, controllability=0.35)
     if "task" in event or "run" in event:
@@ -126,8 +174,8 @@ def encode_database_event(
     return StimulusVector.from_mapping(values)
 
 
-class AdaptivePostgresNeuronRuntime(PostgresNeuronRuntime):
-    """Neuron runtime that converts explicit outcomes into continuous learning."""
+class AdaptivePostgresNeuronRuntime(PersistentPersonalityMixin, PostgresNeuronRuntime):
+    """Persistent 24-neuron runtime with automatic cross-session evolution."""
 
     def emit_event(
         self,
@@ -172,25 +220,3 @@ class AdaptivePostgresNeuronRuntime(PostgresNeuronRuntime):
             operation=str(event.get("operation") or "update"),
             payload=event.get("payload") or {},
         )
-
-    def _process_claimed(self, event: dict[str, Any]) -> dict[str, Any]:
-        result = super()._process_claimed(event)
-        stimulus = StimulusVector(tuple(float(value) for value in result["stimulus_vector"]))
-        reward = _clip(stimulus.get("reward_delta") - stimulus.get("loss_delta"))
-        result["learning"] = {"applied": False, "reward": reward}
-        if abs(reward) < 0.05:
-            return result
-        try:
-            outcome = self.record_outcome(
-                event_id=int(event["id"]),
-                reward=reward,
-                outcome={"automatic": True, "source": event.get("event_type")},
-            )
-            result["learning"] = {
-                "applied": True,
-                "reward": reward,
-                "outcome_event_id": outcome["id"],
-            }
-        except Exception as exc:  # Reflex state remains valid if learning storage fails.
-            result["learning"]["error"] = str(exc)
-        return result
