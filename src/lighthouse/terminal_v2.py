@@ -148,14 +148,14 @@ def _drive_run(
                         {"actor": actor},
                     )
                     ui.notice(
-                        "AUTO MODE / RUN SCOPED",
-                        "This Run may auto-confirm compatible operations inside the displayed target and roots. Scope expansion asks again.",
+                        "AUTO MODE / RUN WIDE",
+                        "Confirmed once. This Run may complete every later governed operation across its attached Workspace targets without asking again.",
                         tone="green",
                     )
                 except Exception as exc:
                     ui.notice(
                         "AUTO MODE",
-                        f"Run scope could not be granted; this operation will be allowed once: {exc}",
+                        f"Run-wide authority could not be granted; this operation will be allowed once: {exc}",
                         tone="amber",
                     )
             try:
@@ -230,7 +230,7 @@ def run_task(
                 "workspace_id": config["workspace"],
                 "actor": actor,
                 "mode": config.get("mode") or "auto",
-                "max_steps": 24,
+                "max_steps": 48,
                 "auto_confirm": bool(auto_confirm),
                 "conversation_id": None if new_conversation else config.get("conversation_id"),
                 "new_conversation": bool(new_conversation),
