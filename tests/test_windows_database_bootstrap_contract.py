@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import re
 
 
 def _database_installer() -> str:
@@ -60,5 +61,13 @@ def test_windows_private_cluster_uses_dedicated_port_and_neutral_locale():
 def test_windows_public_bootstrap_refreshes_staged_helpers_without_version_drift():
     script = Path("install-windows.ps1").read_text(encoding="utf-8")
 
-    assert script.count("v=1.5.0") == 3
-    assert script.count("rev=20260726-postgres2") == 3
+    helper_urls = re.findall(
+        r"https://raw\.githubusercontent\.com/CPYMSU/LightHouse/main/"
+        r"install-windows-(?:database|core|service)\.ps1\?v=([^&']+)&rev=([^']+)",
+        script,
+    )
+    assert len(helper_urls) == 3
+    assert {version for version, _revision in helper_urls} == {"1.5.0"}
+    revisions = {revision for _version, revision in helper_urls}
+    assert len(revisions) == 1
+    assert next(iter(revisions)).strip()
