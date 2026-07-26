@@ -145,13 +145,30 @@ def _drive_run(
                     snapshot = client.request(
                         "POST",
                         f"/v1/agent/runs/{run_id}/auto-authorize",
-                        {"actor": actor},
+                        {"actor": actor, "background": True},
                     )
                     ui.notice(
                         "AUTO MODE / RUN WIDE",
-                        "Confirmed once. This Run may complete every later governed operation across its attached Workspace targets without asking again.",
+                        "Confirmed once. Later governed operations continue automatically, while every tool start, result and Receipt remains visible.",
                         tone="green",
                     )
+                    transition_deadline = time.monotonic() + 5.0
+                    while time.monotonic() < transition_deadline:
+                        current_status = str((snapshot.get("run") or {}).get("status") or "")
+                        if current_status != "awaiting_confirmation":
+                            break
+                        time.sleep(0.05)
+                        snapshot = client.request("GET", f"/v1/agent/runs/{run_id}")
+                    if str((snapshot.get("run") or {}).get("status") or "") == "awaiting_confirmation":
+                        ui.notice(
+                            "AUTO MODE",
+                            "Authorization is still being applied. The Run remains durable; retry with its Run ID if the control plane was interrupted.",
+                            tone="amber",
+                        )
+                        return snapshot
+                    # The server-side Auto thread now continues the run. Return to
+                    # the normal poll/render loop instead of blocking on one HTTP call.
+                    continue
                 except Exception as exc:
                     ui.notice(
                         "AUTO MODE",
