@@ -14,11 +14,18 @@ from .ui_v12 import ObservatoryTerminal
 
 
 AUTO_MODE_KEY = "auto_mode"
+OBSERVE_MODE_KEY = "observe_mode"
+_OBSERVE_MODES = {"off", "focus", "balanced", "verbose"}
 
 
 def auto_mode_enabled(config: dict[str, Any]) -> bool:
     """Whether action-time permission cards offer a Run-scoped Auto option."""
     return bool(config.get(AUTO_MODE_KEY, True))
+
+
+def observe_mode(config: dict[str, Any]) -> str:
+    value = str(config.get(OBSERVE_MODE_KEY) or "balanced").strip().lower()
+    return value if value in _OBSERVE_MODES else "balanced"
 
 
 def set_auto_mode(
@@ -40,6 +47,22 @@ def set_auto_mode(
             tone="green" if enabled else "cyan",
         )
     return bool(enabled)
+
+
+def set_observe_mode(
+    config: dict[str, Any],
+    mode: str,
+    *,
+    ui: ObservatoryTerminal | None = None,
+) -> str:
+    requested = str(mode or "balanced").strip().lower()
+    if requested not in _OBSERVE_MODES:
+        raise ValueError("observe mode must be off, focus, balanced or verbose")
+    config[OBSERVE_MODE_KEY] = requested
+    base._save(config)
+    if ui is not None:
+        ui.set_observe_mode(requested)
+    return requested
 
 
 def _auto_command(
@@ -69,6 +92,57 @@ def _auto_command(
     ui.notice("AUTO MODE", "Use /auto on, /auto off or /auto status.", tone="amber")
 
 
+def _observe_command(
+    argument: str,
+    *,
+    config: dict[str, Any],
+    ui: ObservatoryTerminal,
+) -> None:
+    requested = str(argument or "status").strip().lower()
+    if requested in {"", "status"}:
+        ui.notice(
+            "OBSERVE MODE",
+            f"{observe_mode(config).upper()} — use /observe off|focus|balanced|verbose",
+            tone="cyan",
+        )
+        return
+    try:
+        set_observe_mode(config, requested, ui=ui)
+    except ValueError as exc:
+        ui.notice("OBSERVE MODE", str(exc), tone="amber")
+
+
+def _steer_run(
+    client: legacy.Client,
+    config: dict[str, Any],
+    ui: ObservatoryTerminal,
+    *,
+    run_id: str,
+    message: str,
+) -> dict[str, Any] | None:
+    run_id = str(run_id or "").strip()
+    message = str(message or "").strip()
+    if not run_id:
+        ui.notice("STEER", "No Run ID is available. Start a Run or provide one explicitly.", tone="amber")
+        return None
+    if not message:
+        ui.notice("STEER", "Provide a concrete direction for the active Run.", tone="amber")
+        return None
+    actor = str(config.get("actor") or getpass.getuser())
+    with ui.busy("COGNITIVE CONTINUITY / APPLY USER DIRECTION"):
+        snapshot = client.request(
+            "POST",
+            f"/v1/agent/runs/{run_id}/direction",
+            {"actor": actor, "message": message},
+        )
+    ui.notice(
+        "DIRECTION ACCEPTED",
+        "The direction is durable and has priority over the previous strategy on the next model decision.",
+        tone="green",
+    )
+    return snapshot
+
+
 def run_task(
     task: str,
     *,
@@ -82,11 +156,12 @@ def run_task(
     task = str(task or "").strip()
     if not task:
         raise legacy.CLIError("task cannot be empty")
-    ui = ui or ObservatoryTerminal()
     if config is None:
         _path, config = base._config()
+    ui = ui or ObservatoryTerminal(observe_mode=observe_mode(config))
+    ui.set_observe_mode(observe_mode(config), announce=False)
     client = client or base._client(config)
-    with ui.busy("WORKSPACE / RESOLVE KERNELS + AGENT FIELD"):
+    with ui.busy("WORKSPACE / RESOLVE KERNELS + COGNITIVE FIELD"):
         base.ensure_workspace(client, config, Path.cwd().resolve())
     durable._scan_memory(client, config, ui)
     actor = str(config.get("actor") or getpass.getuser())
@@ -100,7 +175,7 @@ def run_task(
                 "workspace_id": config["workspace"],
                 "actor": actor,
                 "mode": config.get("mode") or "auto",
-                "max_steps": 24,
+                "max_steps": 48,
                 "auto_confirm": bool(auto_confirm),
                 "conversation_id": None if new_conversation else config.get("conversation_id"),
                 "new_conversation": bool(new_conversation),
@@ -118,9 +193,7 @@ def run_task(
         snapshot,
         actor=actor,
         ui=ui,
-        auto_mode_available=(
-            auto_mode_enabled(config) if auto_mode is None else bool(auto_mode)
-        ),
+        auto_mode_available=(auto_mode_enabled(config) if auto_mode is None else bool(auto_mode)),
     )
     conversation = snapshot.get("conversation") if isinstance(snapshot.get("conversation"), dict) else {}
     if conversation.get("id"):
@@ -149,12 +222,24 @@ def _show_tokens(client, config: dict[str, Any], ui: ObservatoryTerminal) -> Non
     ui.tokens(payload)
 
 
+def _show_cognition(client, config: dict[str, Any], ui: ObservatoryTerminal) -> None:
+    run_id = str(config.get("last_run_id") or "")
+    if not run_id:
+        ui.notice("COGNITION", "No Run has been started in this terminal yet.", tone="cyan")
+        return
+    with ui.busy("COGNITIVE CONTINUITY / LOAD"):
+        payload = client.request("GET", f"/v1/agent/runs/{run_id}/cognition")
+    ui.cognition(payload)
+
+
 def interactive() -> int:
-    ui = ObservatoryTerminal()
     _path, config = base._config()
     if AUTO_MODE_KEY not in config:
         config[AUTO_MODE_KEY] = True
-        base._save(config)
+    if OBSERVE_MODE_KEY not in config:
+        config[OBSERVE_MODE_KEY] = "balanced"
+    base._save(config)
+    ui = ObservatoryTerminal(observe_mode=observe_mode(config))
     client = base._client(config)
     current_project = Path.cwd().resolve()
     with ui.busy("WORKSPACE / BIND SYSTEM + DESKTOP"):
@@ -162,6 +247,7 @@ def interactive() -> int:
     durable._scan_memory(client, config, ui)
     base._redraw(ui, config)
     _auto_command("status", config=config, ui=ui)
+    _observe_command("status", config=config, ui=ui)
     session = ui.session(Path.home() / ".lighthouse" / "history")
     while True:
         try:
@@ -182,10 +268,13 @@ def interactive() -> int:
         elif line == "/help":
             ui.help()
             ui.notice(
-                "LIGHTHOUSE 1.2",
-                "/auto on|off — offer or hide Run-scoped Auto at action time\n"
+                "LIGHTHOUSE 1.4",
+                "/observe off|focus|balanced|verbose — control cognitive and engineering detail\n"
+                "/cognition — show the latest durable Cognitive State\n"
+                "/steer <direction> — redirect the latest active Run\n"
+                "/auto on|off — offer or hide Run-wide Auto at action time\n"
                 "/agents — show Agent count, roles, progress and Bus advice\n"
-                "/tokens — show this Run and conversation token receipts",
+                "/tokens — show Run and conversation Token receipts",
                 tone="cyan",
             )
         elif line == "/new":
@@ -202,25 +291,32 @@ def interactive() -> int:
         elif line == "/status":
             base._redraw(ui, config)
             _auto_command("status", config=config, ui=ui)
+            _observe_command("status", config=config, ui=ui)
             base.doctor(ui=ui)
         elif line == "/agents":
             _show_agents(client, config, ui)
         elif line == "/tokens":
             _show_tokens(client, config, ui)
+        elif line == "/cognition":
+            _show_cognition(client, config, ui)
+        elif line.startswith("/steer"):
+            _steer_run(
+                client,
+                config,
+                ui,
+                run_id=str(config.get("last_run_id") or ""),
+                message=line[len("/steer"):].strip(),
+            )
+        elif line.startswith("/observe"):
+            _observe_command(line[len("/observe"):].strip(), config=config, ui=ui)
         elif line.startswith("/auto"):
             _auto_command(line[len("/auto"):].strip(), config=config, ui=ui)
         elif line.startswith("/capabilities"):
-            base._capability_view(
-                client, config, ui, line[len("/capabilities"):].strip()
-            )
+            base._capability_view(client, config, ui, line[len("/capabilities"):].strip())
         elif line.startswith("/mode"):
             requested = line[len("/mode"):].strip().lower()
             if requested not in {"auto", "system", "data", "desktop"}:
-                ui.notice(
-                    "MODE",
-                    "Use /mode auto, /mode system, /mode data or /mode desktop.",
-                    tone="amber",
-                )
+                ui.notice("MODE", "Use /mode auto, /mode system, /mode data or /mode desktop.", tone="amber")
             else:
                 config["mode"] = requested
                 base._save(config)
@@ -229,6 +325,7 @@ def interactive() -> int:
             base.init_project(line[len("/init"):].strip() or os.getcwd(), ui=ui)
             _path, config = base._config()
             client = base._client(config)
+            ui.set_observe_mode(observe_mode(config), announce=False)
             base._redraw(ui, config)
         elif line == "/doctor":
             base.doctor(ui=ui)
@@ -268,6 +365,19 @@ def main(argv: list[str] | None = None) -> int:
         ui = ObservatoryTerminal()
         _path, config = base._config()
         _auto_command(" ".join(argv[1:]) if len(argv) > 1 else "status", config=config, ui=ui)
+        return 0
+    if argv and argv[0] == "observe":
+        _path, config = base._config()
+        ui = ObservatoryTerminal(observe_mode=observe_mode(config))
+        _observe_command(" ".join(argv[1:]) if len(argv) > 1 else "status", config=config, ui=ui)
+        return 0
+    if argv and argv[0] == "steer":
+        if len(argv) < 3:
+            raise legacy.CLIError('usage: lh steer <run-id> "direction"')
+        _path, config = base._config()
+        ui = ObservatoryTerminal(observe_mode=observe_mode(config))
+        client = base._client(config)
+        _steer_run(client, config, ui, run_id=argv[1], message=" ".join(argv[2:]))
         return 0
     return durable_base_main(argv)
 
