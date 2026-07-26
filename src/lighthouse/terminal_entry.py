@@ -7,6 +7,7 @@ from . import __version__
 from . import terminal as base
 from . import terminal_v3  # compatibility marker for 1.0 installer contracts
 from . import terminal_v4
+from .conversation_control import install_terminal_hooks
 from .ui import SwissTerminal
 
 
@@ -41,6 +42,7 @@ def _redraw(
 
 def main(argv: list[str] | None = None) -> int:
     base._redraw = _redraw
+    install_terminal_hooks(base, terminal_v4)
     return terminal_v4.main(argv)
 
 
