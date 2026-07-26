@@ -77,12 +77,14 @@ def test_registry_deduplication_findings_conflicts_and_dependencies_are_durable(
             workspace_id=workspace.id,
             requested_by="main-ai",
             role="backend",
-            goal="Fix wildcard scope inheritance",
+            goal="Fix wildcard scope inheritance behavior",
             payload={**payload, "new_context": "The parent Run uses allowed_capabilities wildcard."},
             priority=80,
         )
         assert duplicate["id"] == first["id"]
         assert duplicate["deduplicated"] is True
+        assert duplicate["deduplication_mode"] == "semantic"
+        assert duplicate["similarity"] >= 0.72
         assert duplicate["payload"]["new_context"].startswith("The parent Run")
         assert any(event["event_type"] == "work_deduplicated" for event in bus.work_events(first["id"]))
 
@@ -100,7 +102,7 @@ def test_registry_deduplication_findings_conflicts_and_dependencies_are_durable(
                 "intensity": "advanced",
             },
         )
-        conflicts = (second["payload"]["coordination"].get("conflicts") or [])
+        conflicts = second["payload"]["coordination"].get("conflicts") or []
         assert conflicts[0]["subject"] == "overlapping_write_intent"
         assert conflicts[0]["with_work_order_id"] == first["id"]
         assert bus.active_conflicts(
@@ -120,10 +122,25 @@ def test_registry_deduplication_findings_conflicts_and_dependencies_are_durable(
             first["id"],
             [
                 {
-                    "claim": "Wildcard capabilities must match every Agent-authorized tool.",
+                    "claim": "Wildcard capabilities are inherited by Agent tools.",
+                    "subject": "agent-auto-scope",
+                    "value": "wildcard_supported",
                     "status": "verified",
                     "confidence": 1,
                     "evidence": [{"file": "src/lighthouse/background_intelligence.py"}],
+                }
+            ],
+        )
+        bus.publish_findings(
+            second["id"],
+            [
+                {
+                    "claim": "Only exact capabilities should be inherited.",
+                    "subject": "agent-auto-scope",
+                    "value": "exact_only",
+                    "status": "proposed",
+                    "confidence": 0.5,
+                    "evidence": [],
                 }
             ],
         )
@@ -131,8 +148,40 @@ def test_registry_deduplication_findings_conflicts_and_dependencies_are_durable(
             workspace_id=workspace.id,
             parent_run_id=None,
         )
-        assert board[-1]["claim"].startswith("Wildcard capabilities")
-        assert board[-1]["source_agent"] == "backend"
+        assert board[-2]["claim"].startswith("Wildcard capabilities")
+        assert board[-2]["source_agent"] == "backend"
+        finding_conflicts = [
+            item for item in bus.active_conflicts(
+                workspace_id=workspace.id,
+                parent_run_id=None,
+            )
+            if item["payload"].get("kind") == "finding"
+        ]
+        assert finding_conflicts[0]["payload"]["subject"] == "agent-auto-scope"
+
+        bus.append_work_event(
+            first["id"],
+            "agent_tool_completed",
+            {
+                "capability": "system.test.run.v1",
+                "label": "TEST",
+                "summary": "pytest -q",
+                "status": "succeeded",
+                "receipt_ok": True,
+            },
+        )
+        bus.complete(
+            first["id"],
+            result={
+                "result_type": "implementation",
+                "completion_evidence": [{"capability": "system.test.run.v1", "ok": True}],
+            },
+        )
+        profiles = {item["role"]: item for item in bus.quality_profiles(workspace_id=workspace.id)}
+        assert profiles["backend"]["recent_reliability"] == 1.0
+        assert profiles["backend"]["evidence_rate"] == 1.0
+        assert profiles["backend"]["tool_success_rate"] == 1.0
+        assert bus.resource_advice(workspace_id=workspace.id)["quality_profiles"]
     finally:
         with psycopg.connect(DSN) as connection:
             connection.execute("DELETE FROM lh_workspaces WHERE id=%s", (workspace.id,))
