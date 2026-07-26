@@ -405,6 +405,7 @@ def create_app(
         q: str = "",
         conversation_id: str | None = None,
         run_id: str | None = None,
+        memory_depth: Literal["index", "focused", "deep"] = "focused",
     ) -> dict[str, Any]:
         fabric = require_memory()
         if context_compiler is not None:
@@ -414,6 +415,7 @@ def create_app(
                 conversation_id=conversation_id,
                 run_id=run_id,
                 query=q,
+                memory_depth=memory_depth,
             )
         return fabric.context(
             workspace_id=workspace_id,

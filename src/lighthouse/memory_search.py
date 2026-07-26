@@ -33,18 +33,31 @@ class PostgresMemoryFabric(BaseMemoryFabric):
         terms = self._query_terms(query)
         clauses = ["workspace_id=%s", "active=TRUE"]
         params: list[Any] = [workspace_id]
+        lexical_query = " ".join(terms)
         if terms:
-            clauses.append("(" + " OR ".join(["name ILIKE %s OR canonical_path ILIKE %s OR search_text ILIKE %s"] * len(terms)) + ")")
+            # `lh_files.search_vector` has a GIN index. Keep ILIKE as a
+            # punctuation/CJK fallback while putting the indexed lexical match
+            # first so larger workspaces do not devolve into full scans.
+            clauses.append(
+                "(search_vector @@ websearch_to_tsquery('simple', %s) OR "
+                + " OR ".join(["name ILIKE %s OR canonical_path ILIKE %s OR search_text ILIKE %s"] * len(terms))
+                + ")"
+            )
+            params.append(lexical_query)
             for term in terms:
                 pattern = f"%{term}%"
                 params.extend([pattern, pattern, pattern])
+        rank = ""
+        if terms:
+            rank = "CASE WHEN search_vector @@ websearch_to_tsquery('simple', %s) THEN 0 ELSE 1 END ASC,"
+            params.append(lexical_query)
         params.append(maximum)
         with self._connect() as connection:
             rows = connection.execute(
                 f"""SELECT id,canonical_path,relative_path,name,extension,mime_type,size_bytes,
                             modified_at,content_hash,last_opened_at,last_seen_at
                      FROM lh_files WHERE {' AND '.join(clauses)}
-                     ORDER BY (last_opened_at IS NOT NULL) DESC,last_opened_at DESC NULLS LAST,
+                     ORDER BY {rank} (last_opened_at IS NOT NULL) DESC,last_opened_at DESC NULLS LAST,
                               last_seen_at DESC LIMIT %s""",
                 params,
             ).fetchall()
@@ -119,9 +132,22 @@ class PostgresMemoryFabric(BaseMemoryFabric):
             turns.append(current)
         return turns[-maximum:]
 
-    def conversation_summary(self, conversation_id: str) -> dict[str, Any]:
+    def conversation_summary(
+        self,
+        conversation_id: str,
+        *,
+        memory_depth: str = "focused",
+    ) -> dict[str, Any]:
+        tier = "index" if str(memory_depth or "focused").strip().lower() == "index" else "focused"
         with self._connect() as connection:
-            row = connection.execute(
+            layer = connection.execute(
+                """SELECT summary,entities,relations,uncertainties,source_distillation_level,
+                          source_message_id,source_hash,model,updated_at
+                   FROM lh_memory_distillation_layers
+                   WHERE conversation_id=%s AND tier=%s""",
+                (conversation_id, tier),
+            ).fetchone()
+            row = layer or connection.execute(
                 """SELECT summary,entities,relations,uncertainties,distillation_level,
                           source_message_id,source_hash,model,updated_at
                    FROM lh_conversation_summaries WHERE conversation_id=%s""",
@@ -138,9 +164,13 @@ class PostgresMemoryFabric(BaseMemoryFabric):
                 "source_hash": None,
                 "model": None,
                 "updated_at": None,
+                "memory_layer": "unavailable",
             }
         value = dict(row)
+        if "source_distillation_level" in value:
+            value["distillation_level"] = value.pop("source_distillation_level")
         value["updated_at"] = value["updated_at"].isoformat() if value.get("updated_at") else None
+        value["memory_layer"] = tier if layer else "legacy_focused"
         return value
 
     def context(
@@ -152,6 +182,7 @@ class PostgresMemoryFabric(BaseMemoryFabric):
         query: str,
         message_limit: int = 20,
         file_limit: int = 20,
+        memory_depth: str = "focused",
     ) -> dict[str, Any]:
         value = super().context(
             workspace_id=workspace_id,
@@ -166,7 +197,10 @@ class PostgresMemoryFabric(BaseMemoryFabric):
                 conversation_id=conversation_id,
                 limit=max(1, min(16, message_limit // 2)),
             )
-            value["conversation_summary"] = self.conversation_summary(conversation_id)
+            value["conversation_summary"] = self.conversation_summary(
+                conversation_id,
+                memory_depth=memory_depth,
+            )
         else:
             value["recent_turns"] = []
             value["conversation_summary"] = {
@@ -175,6 +209,7 @@ class PostgresMemoryFabric(BaseMemoryFabric):
                 "relations": [],
                 "uncertainties": [],
                 "distillation_level": 0,
+                "memory_layer": "unavailable",
             }
         return value
 
@@ -273,6 +308,20 @@ class PostgresMemoryFabric(BaseMemoryFabric):
                     model,
                 ),
             ).fetchone()
+            self._store_distillation_layers(
+                connection,
+                conversation_id=conversation_id,
+                result={
+                    "summary": summary,
+                    "entities": entities,
+                    "relations": relations,
+                    "uncertainties": uncertainties,
+                },
+                source_message_id=source_message_id,
+                source_hash=source_hash,
+                distillation_level=distillation_level,
+                model=model,
+            )
             connection.execute(
                 """DELETE FROM lh_world_inferences
                    WHERE workspace_id=%s AND conversation_id=%s AND distillation_level <= %s""",
@@ -343,6 +392,74 @@ class PostgresMemoryFabric(BaseMemoryFabric):
         value["conversation_id"] = str(value["conversation_id"])
         value["updated_at"] = value["updated_at"].isoformat()
         return value
+
+    @staticmethod
+    def _store_distillation_layers(
+        connection,
+        *,
+        conversation_id: str,
+        result: dict[str, Any],
+        source_message_id: int | None,
+        source_hash: str,
+        distillation_level: int,
+        model: str | None,
+    ) -> None:
+        summary = str(result.get("summary") or "").strip()
+        entities = result.get("entities") if isinstance(result.get("entities"), list) else []
+        relations = result.get("relations") if isinstance(result.get("relations"), list) else []
+        uncertainties = result.get("uncertainties") if isinstance(result.get("uncertainties"), list) else []
+        layers = {
+            "focused": {
+                "summary": summary,
+                "entities": entities,
+                "relations": relations,
+                "uncertainties": uncertainties,
+            },
+            "index": {
+                "summary": PostgresMemoryFabric._index_summary(summary),
+                "entities": entities[:6],
+                "relations": relations[:6],
+                "uncertainties": uncertainties[:4],
+            },
+        }
+        for tier, payload in layers.items():
+            connection.execute(
+                """INSERT INTO lh_memory_distillation_layers(
+                       conversation_id,tier,summary,entities,relations,uncertainties,
+                       source_message_id,source_hash,source_distillation_level,model
+                   ) VALUES (%s,%s,%s,%s::jsonb,%s::jsonb,%s::jsonb,%s,%s,%s,%s)
+                   ON CONFLICT (conversation_id,tier) DO UPDATE SET
+                     summary=EXCLUDED.summary,
+                     entities=EXCLUDED.entities,
+                     relations=EXCLUDED.relations,
+                     uncertainties=EXCLUDED.uncertainties,
+                     source_message_id=EXCLUDED.source_message_id,
+                     source_hash=EXCLUDED.source_hash,
+                     source_distillation_level=EXCLUDED.source_distillation_level,
+                     model=EXCLUDED.model,
+                     updated_at=now()""",
+                (
+                    conversation_id,
+                    tier,
+                    payload["summary"],
+                    json.dumps(payload["entities"], ensure_ascii=False),
+                    json.dumps(payload["relations"], ensure_ascii=False),
+                    json.dumps(payload["uncertainties"], ensure_ascii=False),
+                    source_message_id,
+                    source_hash,
+                    max(0, min(int(distillation_level), 9)),
+                    model,
+                ),
+            )
+
+    @staticmethod
+    def _index_summary(value: str, limit: int = 1_200) -> str:
+        text = str(value or "").strip()
+        if len(text) <= limit:
+            return text
+        head = max(80, limit * 2 // 3)
+        tail = max(40, limit - head - 22)
+        return text[:head] + " …[index distillation]… " + text[-tail:]
 
     def schedule_distillation(
         self,

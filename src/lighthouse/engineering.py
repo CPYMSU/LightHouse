@@ -563,6 +563,20 @@ class AdaptiveEngineeringMixin:
                 status=AgentRunStatus.RUNNING,
             )
 
+            if decision.kind == "memory_expand":
+                depth = str((decision.arguments or {}).get("depth") or "focused")
+                self.repository.append_agent_step(
+                    run_id,
+                    "memory_context_expanded",
+                    {
+                        "step": next_step,
+                        "depth": depth,
+                        "reason": decision.reason,
+                        "source": "model_requested_progressive_memory",
+                    },
+                )
+                continue
+
             if decision.kind == "final":
                 self.repository.append_agent_step(
                     run_id,

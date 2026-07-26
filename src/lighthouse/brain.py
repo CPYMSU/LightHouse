@@ -6,6 +6,11 @@ from uuid import uuid4
 from .addressing import ExecutionAddressResolver
 from .agent import AgentRuntime
 from .memory_bridge import MemoryRuntimeBridge
+from .memory_resolution import (
+    compact_memory_context,
+    memory_resolution_policy,
+    normalize_memory_depth,
+)
 from .models import (
     ConfirmationMode,
     KernelMode,
@@ -359,6 +364,7 @@ class LightHouseBrain(AgentRuntime):
                     "conversation_id": conversation["id"] if conversation else None,
                 }
                 if self.context_compiler is not None:
+                    memory_depth = self._memory_context_depth(run_id)
                     bundle = self.context_compiler.compile(
                         workspace_id=workspace.id,
                         actor=run.actor,
@@ -367,6 +373,7 @@ class LightHouseBrain(AgentRuntime):
                         query=query,
                         turn_limit=8,
                         file_limit=16,
+                        memory_depth=memory_depth,
                     )
                     state["context_intelligence"] = bundle
                     state["memory"] = {
@@ -379,16 +386,20 @@ class LightHouseBrain(AgentRuntime):
                         "uncertainties": bundle.get("uncertainties"),
                         "relevant_files": bundle.get("relevant_files"),
                         "recent_locators": bundle.get("recent_locators"),
+                        "memory_index": bundle.get("memory_index"),
                     }
                 else:
-                    state["memory"] = self.memory.context(
+                    memory_depth = self._memory_context_depth(run_id)
+                    policy = memory_resolution_policy(memory_depth)
+                    raw_memory = self.memory.context(
                         workspace_id=workspace.id,
                         actor=run.actor,
                         conversation_id=conversation["id"] if conversation else None,
                         query=query,
-                        message_limit=24,
-                        file_limit=24,
+                        message_limit=max(2, policy.turn_limit * 2),
+                        file_limit=policy.file_limit,
                     )
+                    state["memory"] = compact_memory_context(raw_memory, depth=memory_depth)
             except Exception as exc:
                 state["context_intelligence"] = {
                     "available": False,
@@ -399,6 +410,24 @@ class LightHouseBrain(AgentRuntime):
         state["agent_observatory"] = snapshot.get("agent_observatory")
         state["coordination_advice"] = snapshot.get("coordination_advice")
         return state
+
+    def _memory_context_depth(self, run_id: str) -> str:
+        """Resolve the latest model-requested expansion for this one run.
+
+        New runs always begin at the index tier. The decision ledger is the
+        durable authority for a focused or deep recall request, so retries and
+        later `advance` calls do not silently widen context again.
+        """
+
+        for step in reversed(self.repository.list_agent_steps(run_id)):
+            if step.get("kind") != "memory_context_expanded":
+                continue
+            payload = step.get("payload") if isinstance(step.get("payload"), dict) else {}
+            try:
+                return normalize_memory_depth(payload.get("depth"), default="index")
+            except ValueError:
+                continue
+        return "index"
 
     def _system_prompt(self, run) -> str:
         base = super()._system_prompt(run)

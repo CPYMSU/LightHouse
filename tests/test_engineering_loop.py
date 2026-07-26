@@ -219,3 +219,34 @@ def test_structured_provider_compacts_sections_into_valid_json():
     assert compacted["engineering"]["operating_principle"] == "existing code first"
     assert "head" not in compacted
     assert "tail" not in compacted
+
+
+def test_model_can_expand_memory_before_asking_or_acting():
+    agent, _kernel, workspace, _executor, provider = runtime(
+        [
+            AgentDecision(
+                kind="memory_expand",
+                arguments={"depth": "focused"},
+                reason="the compact memory index lacks an earlier decision",
+            ),
+            AgentDecision(kind="final", message="Completed after recalling the prior decision.", reason="enough context"),
+        ]
+    )
+
+    completed = agent.start(
+        task="Continue the implementation from earlier work.",
+        workspace_id=workspace.id,
+        actor="adsin",
+    )
+
+    assert completed["run"]["status"] == AgentRunStatus.SUCCEEDED.value
+    expanded = [step["payload"] for step in completed["steps"] if step["kind"] == "memory_context_expanded"]
+    assert expanded == [
+        {
+            "step": 1,
+            "depth": "focused",
+            "reason": "the compact memory index lacks an earlier decision",
+            "source": "model_requested_progressive_memory",
+        }
+    ]
+    assert "memory_expand" in provider.states[0][0]

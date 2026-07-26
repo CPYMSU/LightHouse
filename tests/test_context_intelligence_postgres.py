@@ -19,7 +19,7 @@ DSN = os.environ.get("TEST_DATABASE_URL", "")
 pytestmark = pytest.mark.skipif(not DSN, reason="TEST_DATABASE_URL is not configured")
 
 
-def test_context_compiler_preserves_eight_complete_turns_and_caches(tmp_path):
+def test_context_compiler_uses_focused_memory_capsule_and_caches(tmp_path):
     suffix = uuid4().hex[:10]
     repository = PostgresRepository(DSN)
     repository.migrate(migration_sql())
@@ -89,9 +89,10 @@ def test_context_compiler_preserves_eight_complete_turns_and_caches(tmp_path):
         turn_limit=8,
     )
     assert first["snapshot"]["cache"] == "miss"
-    assert len(first["recent_turns"]) == 8
-    assert first["recent_turns"][0]["user"]["content"] == "user-2"
-    assert first["recent_turns"][-1]["assistant"][-1]["content"] == "assistant-9"
+    assert first["memory_index"]["tier"] == "focused"
+    assert len(first["recent_turns"]) == 4
+    assert first["recent_turns"][0]["user"]["content"] == "user-6"
+    assert first["recent_turns"][-1]["assistant"]["content"] == "assistant-9"
     assert first["active_task"]["subject"] is None
     assert any(item["role"] == "memory-steward" for item in first["available_agents"])
 
@@ -128,6 +129,11 @@ def test_context_compiler_preserves_eight_complete_turns_and_caches(tmp_path):
         distillation_level=2,
         model="test-model",
     )
+    index_layer = memory.conversation_summary(conversation["id"], memory_depth="index")
+    focused_layer = memory.conversation_summary(conversation["id"], memory_depth="focused")
+    assert index_layer["memory_layer"] == "index"
+    assert focused_layer["memory_layer"] == "focused"
+    assert index_layer["summary"] == focused_layer["summary"]
     compiler.invalidate(
         workspace_id=workspace.id,
         conversation_id=conversation["id"],

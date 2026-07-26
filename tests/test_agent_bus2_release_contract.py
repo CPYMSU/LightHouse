@@ -19,7 +19,7 @@ def test_agent_bus2_reuses_the_existing_durable_runtime():
     assert "design-agent','coding-agent','verification-agent" in registry
     assert "active=FALSE" in registry
     assert '"0009_persistent_emergent_personality.sql"' in migration
-    assert '"0010_' not in migration
+    assert '"0010_memory_resolution_layers.sql"' in migration
 
 
 def test_agent_bus2_wildcard_and_boundary_checks_are_both_present():

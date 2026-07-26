@@ -67,6 +67,7 @@ def migration_sql() -> str:
             "0007_agent_observatory_massive_build.sql",
             "0008_operation_event_sequence.sql",
             "0009_persistent_emergent_personality.sql",
+            "0010_memory_resolution_layers.sql",
         )
     )
 
