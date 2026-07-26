@@ -20,6 +20,10 @@ class _ActorRequest(_StrictModel):
     actor: str = Field(min_length=1, max_length=128)
 
 
+class _DirectionRequest(_ActorRequest):
+    message: str = Field(min_length=1, max_length=20000)
+
+
 def create_app(
     settings: Settings | None = None,
     kernel: OperationKernel | None = None,
@@ -59,6 +63,27 @@ def create_app(
     )
     def auto_authorize_run(run_id: str, payload: _ActorRequest) -> dict[str, Any]:
         return agent_runtime.authorize_auto(run_id, actor=payload.actor)
+
+    @app.post(
+        "/v1/agent/runs/{run_id}/direction",
+        dependencies=[Depends(require_operator)],
+    )
+    def steer_run(run_id: str, payload: _DirectionRequest) -> dict[str, Any]:
+        method = getattr(agent_runtime, "provide_direction", None)
+        if not callable(method):
+            raise HTTPException(status_code=409, detail="Cognitive Continuity is not configured")
+        return method(run_id, actor=payload.actor, message=payload.message)
+
+    @app.get(
+        "/v1/agent/runs/{run_id}/cognition",
+        dependencies=[Depends(require_operator)],
+    )
+    def run_cognition(run_id: str) -> dict[str, Any]:
+        snapshot = agent_runtime.snapshot(run_id)
+        return {
+            "run_id": run_id,
+            "observer": snapshot.get("cognitive_observer") or {},
+        }
 
     @app.get(
         "/v1/agent/runs/{run_id}/agents",
