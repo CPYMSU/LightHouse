@@ -12,9 +12,14 @@ $ProgressPreference = 'SilentlyContinue'
 $TaskName = 'LightHouse'
 $ApiPort = 8787
 $DefaultPrivatePort = 55432
+$PostgresPackageId = 'PostgreSQL.PostgreSQL.16'
 
 function Write-Step([string]$Message) {
     Write-Host $Message -ForegroundColor Cyan
+}
+
+function Write-WarningStep([string]$Message) {
+    Write-Host $Message -ForegroundColor Yellow
 }
 
 function Fail([string]$Message) {
@@ -61,43 +66,240 @@ function Save-Config([string]$Path, [hashtable]$Config) {
     Protect-CurrentUserFile $Path
 }
 
-function Test-Postgres16([string]$Bin) {
+function Get-ExternalDatabaseUrl([hashtable]$Config) {
+    $environmentValue = [string]$env:LIGHTHOUSE_DATABASE_URL
+    if ($environmentValue) {
+        $environmentValue = $environmentValue.Trim()
+        if ($environmentValue -notmatch '^postgres(?:ql)?://') {
+            Fail 'LIGHTHOUSE_DATABASE_URL must be a postgresql:// or postgres:// URL'
+        }
+        return $environmentValue
+    }
+
+    $managed = $Config.ContainsKey('database_managed') -and [bool]$Config['database_managed']
+    if (-not $managed -and $Config.ContainsKey('database_url')) {
+        $configured = ([string]$Config['database_url']).Trim()
+        if ($configured) { return $configured }
+    }
+    return ''
+}
+
+function Get-PostgresRuntimeReport([string]$Bin) {
+    $missing = New-Object System.Collections.Generic.List[string]
+    $root = if ($Bin) { Split-Path -Parent $Bin } else { '' }
+    $version = ''
+    $pkglibDir = ''
+    $shareDir = ''
+
+    if (-not $Bin -or -not (Test-Path -LiteralPath $Bin -PathType Container)) {
+        return @{
+            Valid = $false
+            Bin = $Bin
+            Root = $root
+            Version = ''
+            PkglibDir = ''
+            ShareDir = ''
+            Missing = @('PostgreSQL 16 bin directory')
+        }
+    }
+
+    foreach ($name in @(
+        'psql.exe',
+        'initdb.exe',
+        'pg_ctl.exe',
+        'pg_isready.exe',
+        'createdb.exe',
+        'postgres.exe',
+        'pg_config.exe'
+    )) {
+        $path = Join-Path $Bin $name
+        if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
+            $missing.Add($path)
+        }
+    }
+
     $psql = Join-Path $Bin 'psql.exe'
-    $initdb = Join-Path $Bin 'initdb.exe'
-    $pgCtl = Join-Path $Bin 'pg_ctl.exe'
-    if (-not (Test-Path -LiteralPath $psql -PathType Leaf)) { return $false }
-    if (-not (Test-Path -LiteralPath $initdb -PathType Leaf)) { return $false }
-    if (-not (Test-Path -LiteralPath $pgCtl -PathType Leaf)) { return $false }
-    $version = (& $psql --version 2>$null | Out-String).Trim()
-    return $version -match 'PostgreSQL\) 16\.'
+    if (Test-Path -LiteralPath $psql -PathType Leaf) {
+        try { $version = (& $psql --version 2>$null | Out-String).Trim() } catch { $version = '' }
+        if ($version -notmatch 'PostgreSQL\) 16\.') {
+            $missing.Add("PostgreSQL 16 psql runtime (found: $version)")
+        }
+    }
+
+    $pgConfig = Join-Path $Bin 'pg_config.exe'
+    if (Test-Path -LiteralPath $pgConfig -PathType Leaf) {
+        try { $pkglibDir = (& $pgConfig --pkglibdir 2>$null | Out-String).Trim() } catch { $pkglibDir = '' }
+        try { $shareDir = (& $pgConfig --sharedir 2>$null | Out-String).Trim() } catch { $shareDir = '' }
+    }
+    if (-not $pkglibDir) { $pkglibDir = Join-Path $root 'lib' }
+    if (-not $shareDir) { $shareDir = Join-Path $root 'share' }
+
+    foreach ($path in @(
+        (Join-Path $pkglibDir 'dict_snowball.dll'),
+        (Join-Path $pkglibDir 'plpgsql.dll'),
+        (Join-Path $shareDir 'postgres.bki'),
+        (Join-Path $shareDir 'postgresql.conf.sample')
+    )) {
+        if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
+            $missing.Add($path)
+        }
+    }
+
+    return @{
+        Valid = ($missing.Count -eq 0)
+        Bin = $Bin
+        Root = $root
+        Version = $version
+        PkglibDir = $pkglibDir
+        ShareDir = $shareDir
+        Missing = @($missing)
+    }
+}
+
+function Test-Postgres16([string]$Bin) {
+    return [bool](Get-PostgresRuntimeReport $Bin).Valid
+}
+
+function Get-PostgresCandidateBins {
+    $candidates = New-Object System.Collections.Generic.List[string]
+    $psql = Get-Command psql.exe -ErrorAction SilentlyContinue
+    if ($psql -and $psql.Source) {
+        $candidates.Add((Split-Path -Parent $psql.Source))
+    }
+    if ($env:ProgramFiles) {
+        $candidates.Add((Join-Path $env:ProgramFiles 'PostgreSQL\16\bin'))
+    }
+    if (${env:ProgramFiles(x86)}) {
+        $candidates.Add((Join-Path ${env:ProgramFiles(x86)} 'PostgreSQL\16\bin'))
+    }
+
+    foreach ($registryRoot in @(
+        'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*',
+        'HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\*'
+    )) {
+        try {
+            foreach ($entry in @(Get-ItemProperty $registryRoot -ErrorAction SilentlyContinue)) {
+                $displayName = [string]$entry.DisplayName
+                $installLocation = [string]$entry.InstallLocation
+                if ($displayName -match '^PostgreSQL 16' -and $installLocation) {
+                    $candidates.Add((Join-Path $installLocation 'bin'))
+                }
+            }
+        }
+        catch { }
+    }
+
+    return @($candidates | Where-Object { $_ } | Select-Object -Unique)
 }
 
 function Resolve-PostgresBin {
-    $psql = Get-Command psql.exe -ErrorAction SilentlyContinue
-    if ($psql) {
-        $bin = Split-Path -Parent $psql.Source
-        if (Test-Postgres16 $bin) { return $bin }
-    }
-    if ($env:ProgramFiles) {
-        $bin = Join-Path $env:ProgramFiles 'PostgreSQL\16\bin'
+    foreach ($bin in @(Get-PostgresCandidateBins)) {
         if (Test-Postgres16 $bin) { return $bin }
     }
     return $null
 }
 
-function Install-Postgres16 {
+function Get-IncompletePostgresReport {
+    foreach ($bin in @(Get-PostgresCandidateBins)) {
+        $report = Get-PostgresRuntimeReport $bin
+        if ($report.Version -match 'PostgreSQL\) 16\.' -and -not $report.Valid) {
+            return $report
+        }
+    }
+    return $null
+}
+
+function Wait-Postgres16([int]$Seconds = 300) {
+    $deadline = (Get-Date).AddSeconds($Seconds)
+    do {
+        $bin = Resolve-PostgresBin
+        if ($bin) { return $bin }
+        Start-Sleep -Seconds 2
+    } while ((Get-Date) -lt $deadline)
+    return $null
+}
+
+function Invoke-WingetPostgresInstall([bool]$Force) {
     if (-not (Get-Command winget.exe -ErrorAction SilentlyContinue)) {
         Fail 'Windows Package Manager (winget) is required to install PostgreSQL 16'
     }
-    Write-Step 'Installing PostgreSQL 16 runtime for the private LightHouse Database Kernel'
+
+    try {
+        & winget.exe source update --name winget --disable-interactivity *> $null
+    }
+    catch { }
+
     $installerPassword = [guid]::NewGuid().ToString('N')
     $override = "--mode unattended --unattendedmodeui none --superpassword `"$installerPassword`" --serverport 5432"
-    & winget.exe install --id PostgreSQL.PostgreSQL.16 --exact --silent `
-        --accept-package-agreements --accept-source-agreements --disable-interactivity `
-        --override $override
-    if ($LASTEXITCODE -ne 0) {
-        Fail "winget failed to install PostgreSQL.PostgreSQL.16 (exit $LASTEXITCODE)"
+    $wingetArguments = @(
+        'install',
+        '--id', $PostgresPackageId,
+        '--exact',
+        '--source', 'winget',
+        '--silent',
+        '--accept-package-agreements',
+        '--accept-source-agreements',
+        '--disable-interactivity',
+        '--override', $override
+    )
+    if ($Force) { $wingetArguments += '--force' }
+
+    & winget.exe @wingetArguments
+    return $LASTEXITCODE
+}
+
+function Repair-Postgres16 {
+    if (-not (Get-Command winget.exe -ErrorAction SilentlyContinue)) { return $false }
+
+    Write-WarningStep 'The PostgreSQL 16 installation is incomplete; attempting an in-place repair'
+    $repairHelp = ''
+    try { $repairHelp = (& winget.exe repair --help 2>$null | Out-String) } catch { $repairHelp = '' }
+    if ($repairHelp) {
+        & winget.exe repair $PostgresPackageId --exact `
+            --accept-package-agreements --accept-source-agreements `
+            --disable-interactivity --force
+        if ($LASTEXITCODE -eq 0) {
+            if (Wait-Postgres16 180) { return $true }
+        }
     }
+
+    Write-WarningStep 'WinGet repair was unavailable or incomplete; forcing the signed package installer to restore missing files'
+    $exitCode = Invoke-WingetPostgresInstall $true
+    if ($exitCode -ne 0) { return $false }
+    return [bool](Wait-Postgres16 300)
+}
+
+function Ensure-Postgres16 {
+    $bin = Resolve-PostgresBin
+    if ($bin) { return $bin }
+
+    $incomplete = Get-IncompletePostgresReport
+    if ($incomplete) {
+        if (Repair-Postgres16) {
+            $bin = Resolve-PostgresBin
+            if ($bin) { return $bin }
+        }
+        $details = (@($incomplete.Missing) -join '; ')
+        Fail "PostgreSQL 16 is installed but incomplete. Missing runtime files: $details. Reinstall PostgreSQL.PostgreSQL.16 from the winget source and rerun the installer."
+    }
+
+    Write-Step 'Installing PostgreSQL 16 runtime for the private LightHouse Database Kernel'
+    $exitCode = Invoke-WingetPostgresInstall $false
+    if ($exitCode -ne 0) {
+        Fail "winget failed to install $PostgresPackageId from the winget source (exit $exitCode)"
+    }
+
+    $bin = Wait-Postgres16 300
+    if ($bin) { return $bin }
+
+    $incomplete = Get-IncompletePostgresReport
+    if ($incomplete -and (Repair-Postgres16)) {
+        $bin = Resolve-PostgresBin
+        if ($bin) { return $bin }
+    }
+
+    $missing = if ($incomplete) { @($incomplete.Missing) -join '; ' } else { 'runtime did not become discoverable' }
+    Fail "PostgreSQL 16 installation did not complete correctly: $missing"
 }
 
 function Test-TcpListener([int]$Port) {
@@ -110,11 +312,7 @@ function Test-PostgresReady([string]$PgIsReady, [int]$Port) {
     return $LASTEXITCODE -eq 0
 }
 
-function Find-PrivatePort([string]$PgIsReady) {
-    if (-not (Test-TcpListener 5432)) { return 5432 }
-    if (-not (Test-PostgresReady $PgIsReady 5432)) {
-        Fail 'port 5432 is occupied by a non-PostgreSQL process; free that port and rerun the installer'
-    }
+function Find-PrivatePort {
     for ($port = $DefaultPrivatePort; $port -lt ($DefaultPrivatePort + 100); $port++) {
         if (-not (Test-TcpListener $port)) { return $port }
     }
@@ -156,20 +354,24 @@ function Prepare-PrivateDatabase {
     New-Item -ItemType Directory -Force -Path $installRoot, $logDir, $postgresRoot | Out-Null
 
     $config = Read-JsonConfig $configFile
-    $databaseUrl = if ($config.ContainsKey('database_url')) { [string]$config['database_url'] } else { '' }
-    $managed = $config.ContainsKey('database_managed') -and [bool]$config['database_managed']
-
-    if ($databaseUrl -and -not $managed) {
-        Write-Step 'Using the existing explicitly configured LightHouse database'
+    $externalDatabaseUrl = Get-ExternalDatabaseUrl $config
+    if ($externalDatabaseUrl) {
+        $config['database_url'] = $externalDatabaseUrl
+        $config['database_managed'] = $false
+        foreach ($key in @('database_port', 'postgres_bin', 'postgres_data_dir')) {
+            if ($config.ContainsKey($key)) { $config.Remove($key) }
+        }
+        Save-Config $configFile $config
+        Write-Step 'Using LIGHTHOUSE_DATABASE_URL or the existing explicitly configured PostgreSQL database'
         return
     }
 
-    $postgresBin = Resolve-PostgresBin
-    if (-not $postgresBin) {
-        Install-Postgres16
-        $postgresBin = Resolve-PostgresBin
+    $managed = $config.ContainsKey('database_managed') -and [bool]$config['database_managed']
+    $postgresBin = Ensure-Postgres16
+    $runtime = Get-PostgresRuntimeReport $postgresBin
+    if (-not $runtime.Valid) {
+        Fail "PostgreSQL 16 runtime validation failed: $(@($runtime.Missing) -join '; ')"
     }
-    if (-not $postgresBin) { Fail 'PostgreSQL 16 command-line tools did not become available' }
 
     $pgIsReady = Join-Path $postgresBin 'pg_isready.exe'
     $initdb = Join-Path $postgresBin 'initdb.exe'
@@ -190,19 +392,34 @@ function Prepare-PrivateDatabase {
         Fail 'a private PostgreSQL data directory exists without its LightHouse database configuration; restore config.json or remove the orphaned private data directory'
     }
 
-    $port = Find-PrivatePort $pgIsReady
+    if (Test-Path -LiteralPath $dataDir) {
+        Remove-Item -LiteralPath $dataDir -Recurse -Force -ErrorAction SilentlyContinue
+    }
+
+    $port = Find-PrivatePort
     $databasePassword = [guid]::NewGuid().ToString('N')
     $passwordFile = Join-Path $postgresRoot '.init-password'
     Write-Utf8NoBom $passwordFile ($databasePassword + "`n")
     Protect-CurrentUserFile $passwordFile
 
     Write-Step "Initializing the private LightHouse Database Kernel on 127.0.0.1:$port"
+    $previousPath = $env:PATH
+    $env:PATH = "$postgresBin;$previousPath"
     try {
         & $initdb -D $dataDir -U lighthouse "--pwfile=$passwordFile" `
-            --auth-local=scram-sha-256 --auth-host=scram-sha-256 --encoding=UTF8
-        if ($LASTEXITCODE -ne 0) { Fail 'initdb failed for the private LightHouse database cluster' }
+            --auth-local=scram-sha-256 --auth-host=scram-sha-256 `
+            --encoding=UTF8 --locale=C
+        if ($LASTEXITCODE -ne 0) {
+            Remove-Item -LiteralPath $dataDir -Recurse -Force -ErrorAction SilentlyContinue
+            $afterFailure = Get-PostgresRuntimeReport $postgresBin
+            if (-not $afterFailure.Valid) {
+                Fail "initdb detected an incomplete PostgreSQL runtime: $(@($afterFailure.Missing) -join '; ')"
+            }
+            Fail 'initdb failed for the private LightHouse database cluster; inspect the preceding PostgreSQL diagnostic'
+        }
     }
     finally {
+        $env:PATH = $previousPath
         Remove-Item -LiteralPath $passwordFile -Force -ErrorAction SilentlyContinue
     }
 
