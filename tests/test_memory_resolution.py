@@ -106,3 +106,14 @@ def test_model_can_request_only_the_next_memory_tier_not_an_unbounded_dump():
 
     assert decision.kind == "memory_expand"
     assert decision.arguments == {"depth": "focused"}
+
+
+def test_compacting_active_task_preserves_unset_subject_fields():
+    compact = compact_memory_context(
+        {"active_task": {"id": "task-1", "goal": "Continue the task", "subject": None}},
+        depth="index",
+    )
+
+    assert compact["active_task"]["id"] == "task-1"
+    assert compact["active_task"]["subject"] is None
+    assert compact["active_task"]["subject_display"] is None

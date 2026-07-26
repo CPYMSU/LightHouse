@@ -26,7 +26,7 @@ a durable `memory_index` showing what remains available in PostgreSQL.
 ## Verification / 驗證
 
 - Added capsule-budget and progressive-expansion tests.
-- Full suite: 225 passed, 15 skipped.
+- Full suite: 226 passed, 15 skipped.
 
 ## Boundary
 

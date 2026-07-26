@@ -242,13 +242,18 @@ def _turns(value: Any, policy: MemoryResolutionPolicy) -> list[dict[str, Any]]:
 def _task(value: Any, policy: MemoryResolutionPolicy) -> dict[str, Any] | None:
     if not isinstance(value, dict):
         return None
-    return {
-        key: _text(value.get(key), policy.item_chars)
-        if key in {"goal", "summary", "subject", "subject_display"}
-        else value.get(key)
-        for key in ("id", "goal", "status", "summary", "subject_kind", "subject", "subject_display", "updated_at")
-        if value.get(key) not in (None, "")
-    }
+    # `active_task` is a public context shape. Keep its known keys even when
+    # their value is null: callers distinguish an unset subject from a missing
+    # field, and compacting memory must not silently change that contract.
+    result: dict[str, Any] = {}
+    for key in ("id", "goal", "status", "summary", "subject_kind", "subject", "subject_display", "updated_at"):
+        raw = value.get(key)
+        result[key] = (
+            _text(raw, policy.item_chars)
+            if key in {"goal", "summary", "subject", "subject_display"} and raw not in (None, "")
+            else raw
+        )
+    return result
 
 
 def _tasks(value: Any, policy: MemoryResolutionPolicy) -> list[dict[str, Any]]:
