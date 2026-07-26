@@ -9,9 +9,9 @@ $ProgressPreference = 'SilentlyContinue'
 # The public entry point stays tiny and PowerShell 5.1-safe. Installation is
 # deliberately sequenced as Database -> Application -> Background Service so
 # no health check can run before the final startup script exists.
-$DatabaseHelperUrl = 'https://raw.githubusercontent.com/CPYMSU/LightHouse/main/install-windows-database.ps1?v=1.5.0&rev=20260726-path1'
-$ApplicationCoreUrl = 'https://raw.githubusercontent.com/CPYMSU/LightHouse/main/install-windows-core.ps1?v=1.5.0&rev=20260726-path1'
-$ServiceInstallerUrl = 'https://raw.githubusercontent.com/CPYMSU/LightHouse/main/install-windows-service.ps1?v=1.5.0&rev=20260726-path1'
+$DatabaseHelperUrl = 'https://raw.githubusercontent.com/CPYMSU/LightHouse/main/install-windows-database.ps1?v=1.6.0&rev=20260726-codefoundry'
+$ApplicationCoreUrl = 'https://raw.githubusercontent.com/CPYMSU/LightHouse/main/install-windows-core.ps1?v=1.6.0&rev=20260726-codefoundry'
+$ServiceInstallerUrl = 'https://raw.githubusercontent.com/CPYMSU/LightHouse/main/install-windows-service.ps1?v=1.6.0&rev=20260726-codefoundry'
 
 if ($env:LIGHTHOUSE_BOOTSTRAP_VALIDATE -eq '1') {
     Write-Output 'LightHouse Windows bootstrap OK'
