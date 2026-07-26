@@ -57,9 +57,8 @@ def test_windows_private_cluster_uses_dedicated_port_and_neutral_locale():
     assert "--encoding=UTF8" in script
 
 
-def test_windows_public_bootstrap_refreshes_staged_helpers():
+def test_windows_public_bootstrap_refreshes_staged_helpers_without_version_drift():
     script = Path("install-windows.ps1").read_text(encoding="utf-8")
 
-    assert "install-windows-database.ps1?v=1.5.1" in script
-    assert "install-windows-core.ps1?v=1.5.1" in script
-    assert "install-windows-service.ps1?v=1.5.1" in script
+    assert script.count("v=1.5.0") == 3
+    assert script.count("rev=20260726-postgres2") == 3
