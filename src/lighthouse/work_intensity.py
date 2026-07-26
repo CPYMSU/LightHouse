@@ -1,12 +1,23 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import json
 from typing import Any
 
 from .agent import _TERMINAL_AGENT_STATES
+from .engineering import CompletionReview
 
 
 _INTENSITIES = {"quick", "balanced", "advanced", "extreme"}
+_CODE_SUFFIXES = {
+    ".py", ".js", ".jsx", ".ts", ".tsx", ".go", ".rs", ".java", ".kt", ".swift",
+    ".c", ".cc", ".cpp", ".h", ".hpp", ".cs", ".rb", ".php", ".sql", ".sh", ".ps1",
+    ".html", ".css", ".scss", ".vue", ".svelte",
+}
+_HIGH_RISK_TERMS = {
+    "auth", "permission", "credential", "secret", "security", "payment", "database", "migration",
+    "transaction", "delete", "deploy", "release", "installer", "public api", "identity", "passkey",
+}
 
 
 @dataclass(frozen=True)
@@ -291,6 +302,104 @@ class WorkIntensityMixin:
         if run.current_step >= policy.hard_main_steps:
             return False
         return super()._may_extend(run_id)
+
+    def _completion_review(self, run_id: str) -> CompletionReview:
+        base = super()._completion_review(run_id)
+        if base.status == "revise":
+            return base
+        policy = policy_for_run(self.repository, run_id)
+        if policy.name in {"quick", "balanced"}:
+            return base
+        steps = self.repository.list_agent_steps(run_id)
+        patch_decisions = [
+            step
+            for step in steps
+            if step.get("kind") == "decision"
+            and isinstance(step.get("payload"), dict)
+            and step["payload"].get("capability") == "system.file.patch.v1"
+        ]
+        if not patch_decisions:
+            return base
+        last_patch = max(int(step.get("sequence") or 0) for step in patch_decisions)
+        changed_files: list[str] = []
+        for step in patch_decisions:
+            patch = str(((step.get("payload") or {}).get("arguments") or {}).get("patch") or "")
+            for line in patch.splitlines():
+                if line.startswith("+++ b/"):
+                    path = line[6:].strip()
+                    if path and path != "/dev/null" and path not in changed_files:
+                        changed_files.append(path)
+        code_changed = any(
+            any(path.lower().endswith(suffix) for suffix in _CODE_SUFFIXES)
+            for path in changed_files
+        )
+        successful_after = {
+            str((step.get("payload") or {}).get("capability") or "")
+            for step in steps
+            if step.get("kind") == "observation"
+            and int(step.get("sequence") or 0) > last_patch
+            and isinstance((step.get("payload") or {}).get("receipt"), dict)
+            and (step.get("payload") or {}).get("receipt", {}).get("ok") is True
+        }
+        guidance: list[str] = []
+        if code_changed and "system.test.run.v1" not in successful_after:
+            guidance.append(
+                f"{policy.name} intensity expects a successful targeted or regression test Receipt after the latest code patch"
+            )
+        run = self.repository.get_agent_run(run_id)
+        risk_text = " ".join([str(run.task).lower(), *[path.lower() for path in changed_files]])
+        high_risk = len(changed_files) > 3 or any(term in risk_text for term in _HIGH_RISK_TERMS)
+        if policy.name == "extreme" and high_risk:
+            reviewed_roles: set[str] = set()
+            agent_bus = getattr(self, "agent_bus", None)
+            if agent_bus is not None:
+                try:
+                    for item in agent_bus.list_work_orders(
+                        workspace_id=run.workspace_id,
+                        parent_run_id=run_id,
+                        limit=100,
+                    ):
+                        if item.get("status") == "succeeded" and item.get("result"):
+                            reviewed_roles.add(str(item.get("role") or ""))
+                except Exception:
+                    reviewed_roles = set()
+            if not reviewed_roles.intersection(
+                {"security", "test-design", "wiring-verification", "integration", "reality", "release"}
+            ):
+                guidance.append(
+                    "extreme intensity expects one independent verification, integration, security, reality or release Agent result for this high-risk change"
+                )
+        if not guidance:
+            return base
+        fingerprint = json.dumps(
+            {
+                "intensity": policy.name,
+                "guidance": guidance,
+                "last_patch": last_patch,
+                "changed_files": changed_files,
+            },
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        repeated = any(
+            step.get("kind") == "completion_review"
+            and isinstance(step.get("payload"), dict)
+            and step["payload"].get("evidence_fingerprint") == fingerprint
+            for step in steps
+        )
+        if not repeated:
+            return CompletionReview(
+                status="revise",
+                guidance=tuple(guidance),
+                warnings=base.warnings,
+                evidence_fingerprint=fingerprint,
+            )
+        return CompletionReview(
+            status="pass_with_warning",
+            warnings=tuple([*base.warnings, *guidance]),
+            evidence_fingerprint=fingerprint,
+        )
 
     def _intensity_adaptations(self, run_id: str) -> list[dict[str, Any]]:
         values: list[dict[str, Any]] = []
