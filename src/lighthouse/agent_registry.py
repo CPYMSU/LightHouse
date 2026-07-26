@@ -138,3 +138,42 @@ class AgentBus2Registry(ScalablePostgresAgentBus):
             payload.setdefault("resolved_role", mapped)
         values = {key: value for key, value in kwargs.items() if key != "payload"}
         return super().dispatch(role=mapped, payload=payload, **values)
+
+    def run_activity(
+        self,
+        *,
+        workspace_id: str,
+        parent_run_id: str | None,
+        after_id: int = 0,
+        limit: int = 160,
+    ) -> list[dict[str, Any]]:
+        with self._connect() as connection:
+            rows = connection.execute(
+                """SELECT e.id,e.event_type,e.payload,e.created_at,
+                          w.id AS work_order_id,w.role,w.status AS work_status
+                   FROM lh_work_events e
+                   JOIN lh_work_orders w ON w.id=e.work_order_id
+                   WHERE w.workspace_id=%s
+                     AND w.parent_run_id IS NOT DISTINCT FROM %s
+                     AND e.id>%s
+                     AND e.event_type IN ('agent_tool_started','agent_tool_completed')
+                   ORDER BY e.id ASC LIMIT %s""",
+                (
+                    workspace_id,
+                    parent_run_id,
+                    max(0, int(after_id)),
+                    max(1, min(int(limit), 500)),
+                ),
+            ).fetchall()
+        return [
+            {
+                "id": int(row["id"]),
+                "event_type": row["event_type"],
+                "payload": row["payload"],
+                "created_at": row["created_at"].isoformat(),
+                "work_order_id": str(row["work_order_id"]),
+                "role": row["role"],
+                "work_status": row["work_status"],
+            }
+            for row in rows
+        ]
