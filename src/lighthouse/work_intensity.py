@@ -170,8 +170,6 @@ def policy_for_run(repository: Any, run_id: str) -> IntensityPolicy:
 class WorkIntensityMixin:
     """Resource and evidence preferences without imposing a fixed workflow."""
 
-    # AdaptiveEngineeringMixin reads these through self. The policy chooses the
-    # actual initial/effective budget; 512 is only the absolute product ceiling.
     minimum_soft_steps = 1
     hard_step_limit = 512
     extension_size = 16
@@ -197,12 +195,26 @@ class WorkIntensityMixin:
             "actor": actor,
             "max_steps": seed_steps,
             "auto_confirm": auto_confirm,
-            "work_intensity": policy.name,
             **kwargs,
         }
         if mode is not None:
             values["mode"] = mode
-        return super().start(**values)
+        snapshot = super().start(**values)
+        run = snapshot.get("run") if isinstance(snapshot.get("run"), dict) else {}
+        run_id = str(run.get("id") or "")
+        if run_id and intensity_from_steps(self.repository.list_agent_steps(run_id)) != policy.name:
+            self.repository.append_agent_step(
+                run_id,
+                "intensity_changed",
+                {
+                    "from": "balanced",
+                    "to": policy.name,
+                    "reason": "run_started",
+                    "effective_from_sequence": len(self.repository.list_agent_steps(run_id)) + 1,
+                },
+            )
+            snapshot = self.snapshot(run_id)
+        return snapshot
 
     def set_work_intensity(self, run_id: str, *, actor: str, intensity: str) -> dict[str, Any]:
         run = self.repository.get_agent_run(run_id)
