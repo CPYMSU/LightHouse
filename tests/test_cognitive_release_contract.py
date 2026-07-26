@@ -6,6 +6,7 @@ def test_cognitive_continuity_uses_existing_runtime_and_event_store():
     brain = Path("src/lighthouse/mega_brain.py").read_text(encoding="utf-8")
     bootstrap = Path("src/lighthouse/bootstrap.py").read_text(encoding="utf-8")
     results = Path("src/lighthouse/agent_results.py").read_text(encoding="utf-8")
+    intensity_provider = Path("src/lighthouse/intensity_provider.py").read_text(encoding="utf-8")
     migrations = Path("src/lighthouse/bootstrap.py").read_text(encoding="utf-8")
 
     assert "class CognitiveContinuityMixin" in cognitive
@@ -13,8 +14,9 @@ def test_cognitive_continuity_uses_existing_runtime_and_event_store():
     assert 'snapshot["cognitive_observer"]' in cognitive
     assert 'state["cognitive_continuity"]' in cognitive
     assert "CognitiveContinuityMixin" in brain
-    assert "AgentBusStructuredProvider" in bootstrap
+    assert "IntensityAwareAgentBusProvider" in bootstrap
     assert "class AgentBusStructuredProvider(CognitiveStructuredProvider)" in results
+    assert "class IntensityAwareAgentBusProvider(AgentBusStructuredProvider)" in intensity_provider
     assert '"0008_operation_event_sequence.sql"' in migrations
     assert '"0009_' not in migrations
 
