@@ -148,6 +148,16 @@ def test_windows_installer_sequences_database_application_and_service():
     assert "powershell.exe" in script
 
 
+def test_windows_public_installer_refreshes_current_session_command_path():
+    script = Path("install-windows.ps1").read_text(encoding="utf-8")
+    assert "function Sync-LightHouseCommandPath" in script
+    assert "Get-LightHouseInstallRoot" in script
+    assert "[Environment]::SetEnvironmentVariable(" in script
+    assert "Get-Command lh.cmd" in script
+    assert script.count("Sync-LightHouseCommandPath") >= 3
+    assert "LightHouse is ready. Run: lh" in script
+
+
 def test_windows_application_core_never_starts_service_or_waits_for_health():
     script = Path("install-windows-core.ps1").read_text(encoding="utf-8")
     assert "Register-ScheduledTask" not in script
