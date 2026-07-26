@@ -69,7 +69,7 @@ def test_windows_bootstrap_stops_the_installed_runtime_before_upgrade():
     assert "Get-CimInstance Win32_Process" in script
     assert "StartsWith($venvRoot" in script
     assert "Stop-LightHouseRuntime" in script.split("-Stage Install")[0]
-    assert "v=1.3.0" in script
+    assert "v=1.4.0" in script
 
 
 def test_windows_core_allocates_and_registers_the_default_instance():

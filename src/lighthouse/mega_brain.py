@@ -1,11 +1,17 @@
 from __future__ import annotations
 
+from dataclasses import replace
+
+from .cognitive import CognitiveContinuityMixin
 from .engineering import AdaptiveEngineeringMixin
 from .neuron_brain import NeuronAwareLightHouseBrain
-from .provider import AgentDecision
 
 
-class MegaProjectLightHouseBrain(AdaptiveEngineeringMixin, NeuronAwareLightHouseBrain):
+class MegaProjectLightHouseBrain(
+    CognitiveContinuityMixin,
+    AdaptiveEngineeringMixin,
+    NeuronAwareLightHouseBrain,
+):
     """Main AI that may freely compose tools and elastic Agents for large work."""
 
     def _dispatch_tool(self, run, decision, step_number: int):
@@ -22,13 +28,7 @@ class MegaProjectLightHouseBrain(AdaptiveEngineeringMixin, NeuronAwareLightHouse
                     conversation = memory.conversation_for_run(run.id)
                     if conversation:
                         arguments.setdefault("conversation_id", conversation["id"])
-            decision = AgentDecision(
-                kind=decision.kind,
-                reason=decision.reason,
-                capability=decision.capability,
-                arguments=arguments,
-                message=decision.message,
-            )
+            decision = replace(decision, arguments=arguments)
         return super()._dispatch_tool(run, decision, step_number)
 
     def _system_prompt(self, run) -> str:
