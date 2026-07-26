@@ -7,8 +7,9 @@ import psycopg
 import pytest
 
 from lighthouse.agent_registry import AgentBus2Registry
+from lighthouse.agent_store import PostgresAgentStore
 from lighthouse.bootstrap import migration_sql
-from lighthouse.models import TargetKind
+from lighthouse.models import KernelMode, TargetKind
 from lighthouse.repository import PostgresRepository
 
 
@@ -36,14 +37,15 @@ def test_specialist_tool_start_and_result_are_queryable_by_parent_run(tmp_path):
         system_target_id=target.id,
     )
     run_id = str(uuid4())
-    with psycopg.connect(DSN) as connection:
-        connection.execute(
-            """INSERT INTO lh_agent_runs(
-                   id,task,workspace_id,actor,mode,max_steps,status
-               ) VALUES (%s,'observe tools',%s,'adsin','auto',48,'running')""",
-            (run_id, workspace.id),
-        )
-        connection.commit()
+    PostgresAgentStore(DSN).create_run(
+        run_id=run_id,
+        task="observe tools",
+        workspace_id=workspace.id,
+        actor="adsin",
+        mode=KernelMode.AUTO,
+        max_steps=48,
+        auto_confirm=True,
+    )
     bus = AgentBus2Registry(DSN)
     bus.register_builtin_agents()
     try:
