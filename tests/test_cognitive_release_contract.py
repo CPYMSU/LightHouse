@@ -18,7 +18,8 @@ def test_cognitive_continuity_uses_existing_runtime_and_event_store():
     assert "class AgentBusStructuredProvider(CognitiveStructuredProvider)" in results
     assert "class IntensityAwareAgentBusProvider(AgentBusStructuredProvider)" in intensity_provider
     assert '"0008_operation_event_sequence.sql"' in migrations
-    assert '"0009_' not in migrations
+    assert '"0009_persistent_emergent_personality.sql"' in migrations
+    assert '"0010_' not in migrations
 
 
 def test_cognitive_api_and_terminal_controls_are_public_contracts():
