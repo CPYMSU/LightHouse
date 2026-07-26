@@ -67,7 +67,7 @@ def test_windows_public_bootstrap_refreshes_staged_helpers_without_version_drift
         script,
     )
     assert len(helper_urls) == 3
-    assert {version for version, _revision in helper_urls} == {"1.5.0"}
+    assert {version for version, _revision in helper_urls} == {"1.6.0"}
     revisions = {revision for _version, revision in helper_urls}
     assert len(revisions) == 1
     assert next(iter(revisions)).strip()
