@@ -9,11 +9,11 @@ from .agent_capabilities import AGENT_BUS_CAPABILITIES
 from .agent_registry import AgentBus2Registry
 from .agent_results import AgentBusStructuredProvider
 from .agent_store import PostgresAgentStore
-from .background_intelligence import BackgroundIntelligenceWorker
 from .capabilities import CapabilityRegistry, DEFAULT_CAPABILITIES
 from .config import Settings
 from .data_capabilities import DATA_KERNEL_CAPABILITIES
 from .data_kernel import DataTargetResolver, PostgresDataCatalog
+from .execution_observability import ObservableBackgroundIntelligenceWorker
 from .executors import (
     DesktopExecutor,
     ElasticAgentBusExecutor,
@@ -193,7 +193,7 @@ def build_brain(settings: Settings, kernel: OperationKernel) -> MegaProjectLight
         requested_workers = 8
     worker_count = max(1, min(requested_workers, 64))
     workers = [
-        BackgroundIntelligenceWorker(
+        ObservableBackgroundIntelligenceWorker(
             agent_bus=agent_bus,
             memory=memory,
             context_compiler=context_compiler,
