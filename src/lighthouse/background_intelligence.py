@@ -5,8 +5,15 @@ import time
 from typing import Any
 from uuid import uuid4
 
+from .agent_coordination import (
+    normalise_collaboration_requests,
+    tool_call_signature,
+    write_paths_for_tool,
+)
+from .agent_results import normalise_agent_result
 from .models import ConfirmationMode, KernelMode, OperationRequest, OperationStatus, digest_json
 from .provider import ModelNotConfiguredError
+from .work_intensity import resolve_intensity
 
 
 class BackgroundIntelligenceWorker:
@@ -107,28 +114,62 @@ class BackgroundIntelligenceWorker:
             payload = dict(work_order.get("payload") or {})
             project_id = str(payload.get("project_id") or "") or None
             parent_run_id = str(work_order.get("parent_run_id") or "") or None
+            intensity_value = payload.get("intensity")
+            if isinstance(intensity_value, dict):
+                intensity_value = intensity_value.get("selected") or intensity_value.get("name")
+            policy = resolve_intensity(intensity_value or "balanced")
             allowed_tools = [
                 name for name in (agent.get("capabilities") or [])
                 if self._capability_exists(str(name))
             ]
             tool_results = list(payload.get("tool_results") or [])
+            local_state = (
+                dict(payload.get("local_cognitive_state") or {})
+                if isinstance(payload.get("local_cognitive_state"), dict)
+                else {}
+            )
             result: dict[str, Any] = {}
-            for round_index in range(1, 9):
+            round_limit = policy.agent_initial_rounds
+            hard_limit = policy.agent_hard_rounds
+            seen_calls: set[str] = set()
+            no_progress_rounds = 0
+            last_progress = -1.0
+            round_index = 0
+
+            while round_index < round_limit:
+                round_index += 1
+                if hasattr(self.agent_bus, "shared_findings"):
+                    payload["shared_findings"] = self.agent_bus.shared_findings(
+                        workspace_id=work_order["workspace_id"],
+                        parent_run_id=parent_run_id,
+                        limit=40,
+                    )
                 result = self.provider.distill(
                     kind="specialist_work",
                     payload={
                         "role": work_order["role"],
                         "goal": work_order["goal"],
+                        "assignment": payload.get("assignment") or {},
+                        "shared_cognitive_brief": payload.get("shared_cognitive_brief") or {},
+                        "shared_findings": payload.get("shared_findings") or [],
+                        "local_cognitive_state": local_state,
                         "context": payload,
+                        "intensity": {"selected": policy.name, "effective": policy.public_dict()},
                         "allowed_tools": allowed_tools,
-                        "tool_results": tool_results[-20:],
+                        "tool_results": tool_results[-30:],
                         "round": round_index,
+                        "round_budget": {
+                            "current_limit": round_limit,
+                            "hard_limit": hard_limit,
+                            "extend_only_with_new_evidence": True,
+                        },
                         "constraints": {
                             "main_ai_is_project_director": True,
                             "main_ai_may_wait_or_continue": True,
                             "do_not_claim_unreceipted_execution": True,
                             "writes_require_run_scope": True,
                             "massive_project_writes_require_lease": bool(project_id),
+                            "avoid_duplicate_work": True,
                         },
                         "_usage_context": {
                             "workspace_id": work_order["workspace_id"],
@@ -158,44 +199,152 @@ class BackgroundIntelligenceWorker:
                             "findings": result.get("findings") or [],
                         },
                     )
+
+                proposed_state = result.get("cognitive_state")
+                if isinstance(proposed_state, dict):
+                    local_state.update(proposed_state)
+                local_state.update(
+                    {
+                        "understanding": str(
+                            local_state.get("understanding") or result.get("summary") or ""
+                        ),
+                        "verified_facts": list(result.get("findings") or [])[-30:],
+                        "open_questions": list(
+                            result.get("open_questions") or result.get("uncertainties") or []
+                        )[-20:],
+                        "next_intent": str(
+                            result.get("next_intent")
+                            or local_state.get("next_intent")
+                            or "review the latest tool Receipts and continue only with new evidence"
+                        ),
+                        "round": round_index,
+                    }
+                )
+                if hasattr(self.agent_bus, "update_work_payload"):
+                    self.agent_bus.update_work_payload(
+                        work_order_id,
+                        {
+                            "local_cognitive_state": local_state,
+                            "tool_results": tool_results[-40:],
+                        },
+                    )
+                    self.agent_bus.append_work_event(
+                        work_order_id,
+                        "agent_cognitive_update",
+                        {"round": round_index, "state": local_state},
+                    )
+
                 calls = result.get("tool_calls")
-                if not isinstance(calls, list) or not calls:
-                    if result.get("complete") is False and round_index < 8:
+                calls = calls if isinstance(calls, list) else []
+                unique_calls: list[dict[str, Any]] = []
+                for call in calls[:8]:
+                    if not isinstance(call, dict):
                         continue
-                    break
-                round_results = []
-                for call_index, call in enumerate(calls[:8]):
-                    round_results.append(
-                        self._execute_specialist_tool(
-                            work_order=work_order,
-                            agent=agent,
-                            call=call,
-                            round_index=round_index,
-                            call_index=call_index,
-                            project_id=project_id,
-                            parent_run_id=parent_run_id,
+                    signature = tool_call_signature(call)
+                    if signature in seen_calls:
+                        continue
+                    seen_calls.add(signature)
+                    unique_calls.append(call)
+
+                evidence_gained = progress > last_progress or bool(result.get("findings")) or bool(unique_calls)
+                last_progress = max(last_progress, progress)
+                if evidence_gained:
+                    no_progress_rounds = 0
+                else:
+                    no_progress_rounds += 1
+
+                if unique_calls:
+                    round_results = []
+                    for call_index, call in enumerate(unique_calls):
+                        round_results.append(
+                            self._execute_specialist_tool(
+                                work_order=work_order,
+                                agent=agent,
+                                call=call,
+                                round_index=round_index,
+                                call_index=call_index,
+                                project_id=project_id,
+                                parent_run_id=parent_run_id,
+                            )
                         )
-                    )
-                tool_results.extend(round_results)
-                if any(item.get("permission_required") for item in round_results):
-                    result["complete"] = False
-                    result.setdefault("uncertainties", []).append(
-                        "A proposed side effect needs the main AI or user to establish a compatible Run scope."
+                    tool_results.extend(round_results)
+                    if any(item.get("permission_required") for item in round_results):
+                        result["complete"] = False
+                        result.setdefault("uncertainties", []).append(
+                            "A proposed side effect needs a compatible parent Run Auto scope."
+                        )
+                        break
+                elif result.get("complete") is not False:
+                    break
+
+                if no_progress_rounds >= 2:
+                    self.agent_bus.append_work_event(
+                        work_order_id,
+                        "agent_budget_stopped",
+                        {
+                            "round": round_index,
+                            "reason": "no new evidence or strategy for two rounds",
+                        },
                     )
                     break
-                if result.get("complete") is True and not calls:
-                    break
-            result["tool_results"] = tool_results[-40:]
-            result["allowed_tools"] = allowed_tools
-            result["work_order_id"] = work_order_id
-            self._store_specialist_findings(work_order, result, project_id=project_id)
+
+                if round_index >= round_limit:
+                    if round_limit < hard_limit and evidence_gained:
+                        previous = round_limit
+                        round_limit = min(hard_limit, round_limit + policy.agent_extension_rounds)
+                        self.agent_bus.append_work_event(
+                            work_order_id,
+                            "budget_extended",
+                            {
+                                "previous_limit": previous,
+                                "new_limit": round_limit,
+                                "reason": "new evidence or executable progress remains",
+                                "intensity": policy.name,
+                            },
+                        )
+                    else:
+                        break
+
+            structured = normalise_agent_result(
+                agent=agent,
+                work_order={**work_order, "payload": payload},
+                result=result,
+                tool_results=tool_results,
+            )
+            structured["allowed_tools"] = allowed_tools
+            structured["local_cognitive_state"] = local_state
+            if hasattr(self.agent_bus, "publish_findings"):
+                self.agent_bus.publish_findings(work_order_id, structured.get("findings") or [])
+            collaboration = self._dispatch_collaborations(
+                work_order=work_order,
+                payload=payload,
+                result=structured,
+                policy=policy,
+            )
+            if collaboration:
+                structured["collaboration_work_orders"] = collaboration
+            self._store_specialist_findings(work_order, structured, project_id=project_id)
             self.agent_bus.report_progress(
                 work_order_id,
-                progress=1.0 if result.get("complete") is not False else max(0.01, float(result.get("progress") or 0.0)),
-                summary=str(result.get("summary") or "Specialist result ready"),
-                criticality=str(result.get("criticality") or "checkpoint"),
+                progress=(
+                    1.0
+                    if structured.get("complete") is not False
+                    else max(0.01, float(structured.get("progress") or 0.0))
+                ),
+                summary=str(structured.get("summary") or "Specialist result ready"),
+                criticality=str(structured.get("criticality") or "checkpoint"),
             )
-            self.agent_bus.complete(work_order_id, result=result)
+            self.agent_bus.append_work_event(
+                work_order_id,
+                "result_fused",
+                {
+                    "result_type": structured.get("result_type"),
+                    "findings": len(structured.get("findings") or []),
+                    "changed_files": structured.get("changed_files") or [],
+                    "tests": structured.get("tests") or [],
+                },
+            )
+            self.agent_bus.complete(work_order_id, result=structured)
         except Exception as exc:
             self.agent_bus.fail(work_order_id, error=str(exc))
 
@@ -217,20 +366,35 @@ class BackgroundIntelligenceWorker:
         if not capability_name or not isinstance(arguments, dict):
             return {"ok": False, "error": "tool call requires capability and arguments"}
         if capability_name not in set(agent.get("capabilities") or []):
-            return {"ok": False, "capability": capability_name, "error": "tool is not authorized for this Agent"}
+            return {
+                "ok": False,
+                "capability": capability_name,
+                "arguments": arguments,
+                "error": "tool is not authorized for this Agent",
+            }
         if self.kernel is None:
-            return {"ok": False, "capability": capability_name, "error": "Operation Kernel is unavailable"}
+            return {
+                "ok": False,
+                "capability": capability_name,
+                "arguments": arguments,
+                "error": "Operation Kernel is unavailable",
+            }
         capability = self.kernel.registry.get(capability_name)
+        if capability.writes and hasattr(self.agent_bus, "acquire_write_intent"):
+            paths = write_paths_for_tool(capability_name, arguments)
+            if paths:
+                self.agent_bus.acquire_write_intent(work_order["id"], paths)
         if capability.confirmation != ConfirmationMode.DIRECT:
             scope = self._parent_auto_scope(parent_run_id)
             if not self._scope_allows(scope, work_order, capability_name):
                 return {
                     "ok": False,
                     "capability": capability_name,
+                    "arguments": arguments,
                     "permission_required": True,
                     "error": "The parent Run has no compatible Auto scope for this side effect.",
                 }
-            if project_id and self.massive_build is not None:
+            if capability.writes and project_id and self.massive_build is not None:
                 path = str(arguments.get("path") or arguments.get("cwd") or ".")
                 lease = self.massive_build.valid_lease(
                     project_id=project_id,
@@ -241,6 +405,7 @@ class BackgroundIntelligenceWorker:
                     return {
                         "ok": False,
                         "capability": capability_name,
+                        "arguments": arguments,
                         "permission_required": True,
                         "error": "Massive Build write requires an active non-overlapping Write Lease.",
                     }
@@ -261,7 +426,12 @@ class BackgroundIntelligenceWorker:
         )
         if snapshot["operation"]["status"] == OperationStatus.AWAITING_CONFIRMATION.value:
             scope = self._parent_auto_scope(parent_run_id)
-            if self._scope_allows(scope, work_order, capability_name):
+            if self._scope_allows(
+                scope,
+                work_order,
+                capability_name,
+                operation=snapshot.get("operation"),
+            ):
                 snapshot = self.kernel.confirm(snapshot["operation"]["id"], actor=actor)
             else:
                 self.agent_bus.mark_waiting_confirmation(
@@ -272,15 +442,72 @@ class BackgroundIntelligenceWorker:
                 return {
                     "ok": False,
                     "capability": capability_name,
+                    "arguments": arguments,
                     "operation_id": snapshot["operation"]["id"],
                     "permission_required": True,
                 }
         return {
             "ok": bool((snapshot.get("receipt") or {}).get("ok")),
             "capability": capability_name,
+            "arguments": arguments,
             "operation": snapshot.get("operation"),
             "receipt": snapshot.get("receipt"),
         }
+
+    def _dispatch_collaborations(
+        self,
+        *,
+        work_order: dict[str, Any],
+        payload: dict[str, Any],
+        result: dict[str, Any],
+        policy,
+    ) -> list[dict[str, Any]]:
+        requests = normalise_collaboration_requests(
+            result.get("collaboration_requests") or result.get("collaboration_request")
+        )
+        coordination = payload.get("coordination") if isinstance(payload.get("coordination"), dict) else {}
+        current_depth = int(coordination.get("collaboration_depth") or 0)
+        if not requests or current_depth >= policy.collaboration_depth:
+            return []
+        values: list[dict[str, Any]] = []
+        for request in requests[:4]:
+            child_payload = {
+                "assignment": {
+                    "goal": request["goal"],
+                    "intent": "collaborate",
+                    "parent_goal": work_order["goal"],
+                    "scope": request.get("scope") or {},
+                    "deliverables": request.get("deliverables") or [],
+                    "preserve": (payload.get("assignment") or {}).get("preserve") or [],
+                },
+                "shared_cognitive_brief": payload.get("shared_cognitive_brief") or {},
+                "intensity": payload.get("intensity") or {"selected": policy.name},
+                "collaboration_depth": current_depth + 1,
+                "requested_by_work_order_id": work_order["id"],
+            }
+            child = self.agent_bus.dispatch(
+                workspace_id=work_order["workspace_id"],
+                parent_run_id=work_order.get("parent_run_id"),
+                requested_by=str(work_order.get("requested_by") or "main-ai"),
+                role=request["role"],
+                goal=request["goal"],
+                payload=child_payload,
+                priority=request["priority"],
+                visibility="foreground",
+            )
+            values.append(child)
+            self.agent_bus.append_work_event(
+                work_order["id"],
+                "collaboration_requested",
+                {
+                    "child_work_order_id": child["id"],
+                    "role": request["role"],
+                    "goal": request["goal"],
+                    "reason": request["reason"],
+                    "depth": current_depth + 1,
+                },
+            )
+        return values
 
     def _parent_auto_scope(self, parent_run_id: str | None) -> dict[str, Any]:
         if not parent_run_id or self.run_repository is None:
@@ -296,12 +523,22 @@ class BackgroundIntelligenceWorker:
         scope: dict[str, Any],
         work_order: dict[str, Any],
         capability_name: str,
+        *,
+        operation: dict[str, Any] | None = None,
     ) -> bool:
-        return bool(
-            scope
-            and scope.get("workspace_id") == work_order.get("workspace_id")
-            and capability_name in set(scope.get("allowed_capabilities") or [])
-        )
+        if not scope or scope.get("workspace_id") != work_order.get("workspace_id"):
+            return False
+        allowed = set(scope.get("allowed_capabilities") or [])
+        if "*" not in allowed and capability_name not in allowed:
+            return False
+        if operation:
+            target_ids = set(scope.get("target_ids") or [])
+            kernels = set(scope.get("allowed_kernels") or [])
+            if target_ids and operation.get("target_id") not in target_ids:
+                return False
+            if kernels and operation.get("kernel") not in kernels:
+                return False
+        return True
 
     def _capability_exists(self, name: str) -> bool:
         if self.kernel is None:
@@ -332,7 +569,11 @@ class BackgroundIntelligenceWorker:
                 evidence = result.get("evidence") or []
             elif isinstance(item, dict):
                 claim = str(item.get("claim") or item.get("finding") or item.get("summary") or "")
-                metadata = {key: value for key, value in item.items() if key not in {"claim", "evidence", "confidence"}}
+                metadata = {
+                    key: value
+                    for key, value in item.items()
+                    if key not in {"claim", "evidence", "confidence"}
+                }
                 confidence = float(item.get("confidence") or 0.6)
                 evidence = item.get("evidence") or result.get("evidence") or []
             else:

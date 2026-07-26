@@ -5,6 +5,7 @@ from typing import Any
 from uuid import uuid4
 
 from .models import AgentRunStatus, KernelMode
+from .work_intensity import resolve_intensity
 
 
 class DeferredRunScheduler:
@@ -22,10 +23,11 @@ class DeferredRunScheduler:
         workspace_id: str,
         actor: str,
         mode: KernelMode = KernelMode.AUTO,
-        max_steps: int = 12,
+        max_steps: int | None = None,
         auto_confirm: bool = False,
         conversation_id: str | None = None,
         new_conversation: bool = False,
+        work_intensity: str = "balanced",
     ) -> dict[str, Any]:
         memory = getattr(self.runtime, "memory", None)
         if memory is None:
@@ -36,9 +38,9 @@ class DeferredRunScheduler:
             raise ValueError("agent task is required")
         if not actor:
             raise ValueError("agent actor is required")
-        max_steps = int(max_steps)
-        if not 1 <= max_steps <= 64:
-            raise ValueError("max_steps must be between 1 and 64")
+        policy = resolve_intensity(work_intensity)
+        requested = policy.initial_main_steps if max_steps is None else int(max_steps)
+        seed_steps = min(64, max(1, requested, min(policy.initial_main_steps, 64)))
         run_id = str(uuid4())
         conversation = memory.ensure_conversation(
             workspace_id=workspace_id,
@@ -53,7 +55,7 @@ class DeferredRunScheduler:
             workspace_id=workspace_id,
             actor=actor,
             mode=mode,
-            max_steps=max_steps,
+            max_steps=seed_steps,
             auto_confirm=bool(auto_confirm),
         )
         memory.link_run(run.id, conversation["id"])
@@ -65,10 +67,13 @@ class DeferredRunScheduler:
                 "workspace_id": workspace_id,
                 "actor": actor,
                 "mode": mode.value,
-                "max_steps": max_steps,
+                "max_steps": seed_steps,
+                "effective_initial_steps": policy.initial_main_steps,
                 "auto_confirm": bool(auto_confirm),
                 "conversation_id": conversation["id"],
                 "deferred": True,
+                "work_intensity": policy.name,
+                "intensity_policy": policy.public_dict(),
             },
         )
         memory.record_message(
@@ -76,7 +81,11 @@ class DeferredRunScheduler:
             role="user",
             content=task,
             run_id=run.id,
-            metadata={"kind": "run_created", "deferred": True},
+            metadata={
+                "kind": "run_created",
+                "deferred": True,
+                "work_intensity": policy.name,
+            },
         )
         memory.start_task(
             run_id=run.id,

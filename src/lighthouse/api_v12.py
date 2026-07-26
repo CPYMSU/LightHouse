@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import hmac
-from typing import Any
+from threading import Thread
+import time
+from typing import Any, Literal
 
 from fastapi import Depends, FastAPI, Header, HTTPException
 from pydantic import BaseModel, ConfigDict, Field
@@ -20,8 +22,16 @@ class _ActorRequest(_StrictModel):
     actor: str = Field(min_length=1, max_length=128)
 
 
+class _AutoAuthorizeRequest(_ActorRequest):
+    background: bool = True
+
+
 class _DirectionRequest(_ActorRequest):
     message: str = Field(min_length=1, max_length=20000)
+
+
+class _IntensityRequest(_ActorRequest):
+    intensity: Literal["quick", "balanced", "advanced", "extreme"]
 
 
 def create_app(
@@ -61,8 +71,40 @@ def create_app(
         "/v1/agent/runs/{run_id}/auto-authorize",
         dependencies=[Depends(require_operator)],
     )
-    def auto_authorize_run(run_id: str, payload: _ActorRequest) -> dict[str, Any]:
-        return agent_runtime.authorize_auto(run_id, actor=payload.actor)
+    def auto_authorize_run(run_id: str, payload: _AutoAuthorizeRequest) -> dict[str, Any]:
+        if not payload.background:
+            return agent_runtime.authorize_auto(run_id, actor=payload.actor)
+
+        def continue_run() -> None:
+            try:
+                agent_runtime.authorize_auto(run_id, actor=payload.actor)
+            except Exception as exc:
+                try:
+                    agent_runtime.repository.append_agent_step(
+                        run_id,
+                        "auto_authorization_error",
+                        {"error": str(exc), "error_type": type(exc).__name__},
+                    )
+                except Exception:
+                    pass
+
+        Thread(
+            target=continue_run,
+            name=f"lighthouse-auto-{run_id[:8]}",
+            daemon=True,
+        ).start()
+        deadline = time.monotonic() + 3.0
+        snapshot = agent_runtime.snapshot(run_id)
+        while time.monotonic() < deadline:
+            run = snapshot.get("run") if isinstance(snapshot.get("run"), dict) else {}
+            steps = snapshot.get("steps") if isinstance(snapshot.get("steps"), list) else []
+            scope_granted = any(step.get("kind") == "auto_scope_granted" for step in steps)
+            if scope_granted or str(run.get("status") or "") != "awaiting_confirmation":
+                break
+            time.sleep(0.025)
+            snapshot = agent_runtime.snapshot(run_id)
+        snapshot["auto_authorization_background"] = True
+        return snapshot
 
     @app.post(
         "/v1/agent/runs/{run_id}/direction",
@@ -74,6 +116,16 @@ def create_app(
             raise HTTPException(status_code=409, detail="Cognitive Continuity is not configured")
         return method(run_id, actor=payload.actor, message=payload.message)
 
+    @app.post(
+        "/v1/agent/runs/{run_id}/intensity",
+        dependencies=[Depends(require_operator)],
+    )
+    def change_run_intensity(run_id: str, payload: _IntensityRequest) -> dict[str, Any]:
+        method = getattr(agent_runtime, "set_work_intensity", None)
+        if not callable(method):
+            raise HTTPException(status_code=409, detail="Work Intensity is not configured")
+        return method(run_id, actor=payload.actor, intensity=payload.intensity)
+
     @app.get(
         "/v1/agent/runs/{run_id}/cognition",
         dependencies=[Depends(require_operator)],
@@ -83,6 +135,9 @@ def create_app(
         return {
             "run_id": run_id,
             "observer": snapshot.get("cognitive_observer") or {},
+            "work_intensity": snapshot.get("work_intensity") or {},
+            "agent_result_fusion": snapshot.get("agent_result_fusion") or {},
+            "agent_execution_activity": snapshot.get("agent_execution_activity") or [],
         }
 
     @app.get(
@@ -95,6 +150,9 @@ def create_app(
             "run_id": run_id,
             "observatory": snapshot.get("agent_observatory") or {},
             "coordination_advice": snapshot.get("coordination_advice") or {},
+            "work_intensity": snapshot.get("work_intensity") or {},
+            "result_fusion": snapshot.get("agent_result_fusion") or {},
+            "execution_activity": snapshot.get("agent_execution_activity") or [],
         }
 
     @app.get(
@@ -138,6 +196,45 @@ def create_app(
         return {"items": items, "count": len(items)}
 
     @app.get(
+        "/v1/agent-bus/findings",
+        dependencies=[Depends(require_operator)],
+    )
+    def shared_findings(
+        workspace_id: str,
+        run_id: str | None = None,
+        limit: int = 40,
+    ) -> dict[str, Any]:
+        items = require_agent_bus().shared_findings(
+            workspace_id=workspace_id,
+            parent_run_id=run_id,
+            limit=limit,
+        )
+        return {"items": items, "count": len(items)}
+
+    @app.get(
+        "/v1/agent-bus/conflicts",
+        dependencies=[Depends(require_operator)],
+    )
+    def agent_conflicts(
+        workspace_id: str,
+        run_id: str | None = None,
+        limit: int = 50,
+    ) -> dict[str, Any]:
+        items = require_agent_bus().active_conflicts(
+            workspace_id=workspace_id,
+            parent_run_id=run_id,
+            limit=limit,
+        )
+        return {"items": items, "count": len(items)}
+
+    @app.get(
+        "/v1/agent-bus/resources",
+        dependencies=[Depends(require_operator)],
+    )
+    def agent_resources(workspace_id: str | None = None) -> dict[str, Any]:
+        return require_agent_bus().resource_advice(workspace_id=workspace_id)
+
+    @app.get(
         "/v1/agent-bus/coordination",
         dependencies=[Depends(require_operator)],
     )
@@ -146,10 +243,16 @@ def create_app(
         run_id: str | None = None,
         project_id: str | None = None,
     ) -> dict[str, Any]:
-        return require_agent_bus().coordination_advice(
+        value = require_agent_bus().coordination_advice(
             workspace_id=workspace_id,
             parent_run_id=run_id,
             project_id=project_id,
         )
+        value["conflicts"] = require_agent_bus().active_conflicts(
+            workspace_id=workspace_id,
+            parent_run_id=run_id,
+            limit=30,
+        )
+        return value
 
     return app

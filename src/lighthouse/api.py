@@ -54,10 +54,11 @@ class AgentRunCreate(StrictModel):
     workspace_id: str
     actor: str = Field(min_length=1, max_length=128)
     mode: KernelMode = KernelMode.AUTO
-    max_steps: int = Field(default=12, ge=1, le=64)
+    max_steps: int | None = Field(default=None, ge=1, le=64)
     auto_confirm: bool = False
     conversation_id: str | None = None
     new_conversation: bool = False
+    work_intensity: Literal["quick", "balanced", "advanced", "extreme"] = "balanced"
 
 
 class AgentInput(StrictModel):
@@ -289,6 +290,7 @@ def create_app(
                 mode=payload.mode,
                 max_steps=payload.max_steps,
                 auto_confirm=payload.auto_confirm,
+                work_intensity=payload.work_intensity,
             )
         return run_scheduler.start(
             task=payload.task,
@@ -299,6 +301,7 @@ def create_app(
             auto_confirm=payload.auto_confirm,
             conversation_id=payload.conversation_id,
             new_conversation=payload.new_conversation,
+            work_intensity=payload.work_intensity,
         )
 
     @app.get("/v1/agent/runs/{run_id}", dependencies=[Depends(require_operator)])
