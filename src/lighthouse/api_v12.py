@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import hmac
+from threading import Thread
+import time
 from typing import Any, Literal
 
 from fastapi import Depends, FastAPI, Header, HTTPException
@@ -18,6 +20,10 @@ class _StrictModel(BaseModel):
 
 class _ActorRequest(_StrictModel):
     actor: str = Field(min_length=1, max_length=128)
+
+
+class _AutoAuthorizeRequest(_ActorRequest):
+    background: bool = True
 
 
 class _DirectionRequest(_ActorRequest):
@@ -65,8 +71,40 @@ def create_app(
         "/v1/agent/runs/{run_id}/auto-authorize",
         dependencies=[Depends(require_operator)],
     )
-    def auto_authorize_run(run_id: str, payload: _ActorRequest) -> dict[str, Any]:
-        return agent_runtime.authorize_auto(run_id, actor=payload.actor)
+    def auto_authorize_run(run_id: str, payload: _AutoAuthorizeRequest) -> dict[str, Any]:
+        if not payload.background:
+            return agent_runtime.authorize_auto(run_id, actor=payload.actor)
+
+        def continue_run() -> None:
+            try:
+                agent_runtime.authorize_auto(run_id, actor=payload.actor)
+            except Exception as exc:
+                try:
+                    agent_runtime.repository.append_agent_step(
+                        run_id,
+                        "auto_authorization_error",
+                        {"error": str(exc), "error_type": type(exc).__name__},
+                    )
+                except Exception:
+                    pass
+
+        Thread(
+            target=continue_run,
+            name=f"lighthouse-auto-{run_id[:8]}",
+            daemon=True,
+        ).start()
+        deadline = time.monotonic() + 3.0
+        snapshot = agent_runtime.snapshot(run_id)
+        while time.monotonic() < deadline:
+            run = snapshot.get("run") if isinstance(snapshot.get("run"), dict) else {}
+            steps = snapshot.get("steps") if isinstance(snapshot.get("steps"), list) else []
+            scope_granted = any(step.get("kind") == "auto_scope_granted" for step in steps)
+            if scope_granted or str(run.get("status") or "") != "awaiting_confirmation":
+                break
+            time.sleep(0.025)
+            snapshot = agent_runtime.snapshot(run_id)
+        snapshot["auto_authorization_background"] = True
+        return snapshot
 
     @app.post(
         "/v1/agent/runs/{run_id}/direction",
@@ -99,6 +137,7 @@ def create_app(
             "observer": snapshot.get("cognitive_observer") or {},
             "work_intensity": snapshot.get("work_intensity") or {},
             "agent_result_fusion": snapshot.get("agent_result_fusion") or {},
+            "agent_execution_activity": snapshot.get("agent_execution_activity") or [],
         }
 
     @app.get(
@@ -113,6 +152,7 @@ def create_app(
             "coordination_advice": snapshot.get("coordination_advice") or {},
             "work_intensity": snapshot.get("work_intensity") or {},
             "result_fusion": snapshot.get("agent_result_fusion") or {},
+            "execution_activity": snapshot.get("agent_execution_activity") or [],
         }
 
     @app.get(
