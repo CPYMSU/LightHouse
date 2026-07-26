@@ -95,5 +95,6 @@ def test_specialist_tool_start_and_result_are_queryable_by_parent_run(tmp_path):
         assert values[-1]["payload"]["result_hash"] == "hash-1"
     finally:
         with psycopg.connect(DSN) as connection:
+            connection.execute("DELETE FROM lh_agent_runs WHERE id=%s", (run_id,))
             connection.execute("DELETE FROM lh_workspaces WHERE id=%s", (workspace.id,))
             connection.commit()
