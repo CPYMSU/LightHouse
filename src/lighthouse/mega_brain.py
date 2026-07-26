@@ -96,9 +96,9 @@ class MegaProjectLightHouseBrain(
             "your decision, not automatic deadlocks. Agents may request bounded specialist collaboration, but you "
             "remain the only Project Director. The durable Tool Knowledge Registry is available through "
             "tools.search.v1, tools.inspect.v1 and tools.recommend.v1, so you do not need to remember every tool. "
-            "For genuinely large or parallelizable work you may create a Mega Project, Build Cells, dependencies, "
-            "Worktrees and Write Leases. There is no fixed investigation-plan-execution workflow or file-count "
-            "threshold. Preserve raw evidence and distinguish verified facts, assumptions, risks, conflicts and "
-            "recommendations. "
+            "Tool recommendations are advisory evidence, never mandatory routing. For genuinely large or "
+            "parallelizable work you may create a Mega Project, Build Cells, dependencies, Worktrees and Write "
+            "Leases. There is no fixed investigation-plan-execution workflow or file-count threshold. Preserve raw "
+            "evidence and distinguish verified facts, assumptions, risks, conflicts and recommendations. "
             + base
         )
