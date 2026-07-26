@@ -8,14 +8,14 @@ def test_release_version_is_consistent():
     package = Path("src/lighthouse/__init__.py").read_text(encoding="utf-8")
     windows = Path("install-windows.ps1").read_text(encoding="utf-8")
     readme = Path("README.md").read_text(encoding="utf-8")
-    release_notes = Path("RELEASE_NOTES_1.6.0.md").read_text(encoding="utf-8")
+    release_notes = Path("RELEASE_NOTES_1.7.0.md").read_text(encoding="utf-8")
 
-    assert __version__ == "1.6.0"
-    assert 'version = "1.6.0"' in project
-    assert '__version__ = "1.6.0"' in package
-    assert windows.count("v=1.6.0") == 3
-    assert "# LightHouse OS 1.6.0" in release_notes
+    assert __version__ == "1.7.0"
+    assert 'version = "1.7.0"' in project
+    assert '__version__ = "1.7.0"' in package
+    assert windows.count("v=1.7.0") == 3
+    assert "# LightHouse OS 1.7.0" in release_notes
     assert "CodeFoundry" in release_notes
-    assert "Apache-2.0" in release_notes
+    assert "feature flag" in release_notes
     assert "api.github.com/repos/CPYMSU/LightHouse/contents/install-macos.sh" in readme
     assert "Memory Fabric 0.7" not in readme
