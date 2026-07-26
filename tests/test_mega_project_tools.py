@@ -50,4 +50,5 @@ def test_main_ai_prompt_keeps_mega_project_mode_optional(monkeypatch):
     assert "There is no fixed" in prompt
     assert "you remain the only Project Director" in prompt
     assert "BALANCED work intensity" in prompt
-    assert prompt.endswith("BASE PROMPT")
+    assert "BASE PROMPT" in prompt
+    assert "complete compact topology" in prompt
