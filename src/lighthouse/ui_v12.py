@@ -392,8 +392,13 @@ class ObservatoryTerminal(SwissTerminal):
     def cognition(self, payload: dict[str, Any]) -> None:
         observer = payload.get("observer") if isinstance(payload.get("observer"), dict) else payload
         state = observer.get("state") if isinstance(observer, dict) else {}
-        self._work_fingerprint = None
-        self._render_work_state({"cognitive_observer": {"state": state}})
+        previous_mode = self.observe_mode
+        try:
+            self.observe_mode = "balanced"
+            self._work_fingerprint = None
+            self._render_work_state({"cognitive_observer": {"state": state}})
+        finally:
+            self.observe_mode = previous_mode
 
     def agents(self, payload: dict[str, Any]) -> None:
         self._agent_fingerprints.clear()
