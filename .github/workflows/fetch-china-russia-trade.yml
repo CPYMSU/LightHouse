@@ -1,0 +1,63 @@
+name: Fetch China-Russia Trade Data
+
+on:
+  push:
+    branches:
+      - data-fetch/china-russia-20260802
+    paths:
+      - tmp/fetch_china_russia_trade.py
+      - .github/workflows/fetch-china-russia-trade.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  OUTPUT_DIR: data-output
+
+jobs:
+  fetch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Fetch and consolidate official data
+        run: python tmp/fetch_china_russia_trade.py
+      - name: Validate generated files
+        if: always()
+        run: |
+          test -s data-output/china_russia_trade_hs2_1995_2025.csv
+          test -s data-output/china_russia_trade_hs2_1995_2025_summary.json
+          python - <<'PY'
+          import csv, json
+          from pathlib import Path
+          csv_path = Path('data-output/china_russia_trade_hs2_1995_2025.csv')
+          summary_path = Path('data-output/china_russia_trade_hs2_1995_2025_summary.json')
+          with csv_path.open(encoding='utf-8-sig', newline='') as f:
+              rows = list(csv.DictReader(f))
+          summary = json.loads(summary_path.read_text(encoding='utf-8'))
+          assert rows, 'CSV has no rows'
+          assert len(rows) == summary['row_count']
+          keys = [(r['year'], r['flow_code'], r['hs2_code']) for r in rows if r['record_type'] == 'trade']
+          assert len(keys) == len(set(keys)), 'duplicate year-flow-HS2 keys'
+          print(json.dumps({
+              'row_count': len(rows),
+              'trade_rows': len(keys),
+              'available_year_min': summary['available_year_min'],
+              'available_year_max': summary['available_year_max'],
+              'missing_queries': len(summary['missing_or_failed_queries']),
+          }, ensure_ascii=False))
+          PY
+      - name: Upload consolidated dataset
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: china-russia-trade-hs2-1995-2025
+          path: |
+            data-output/china_russia_trade_hs2_1995_2025.csv
+            data-output/china_russia_trade_hs2_1995_2025_summary.json
+          if-no-files-found: error
+          retention-days: 7
