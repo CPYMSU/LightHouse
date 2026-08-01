@@ -1,5 +1,6 @@
 name: Fetch China-Russia Trade Data
 
+# Temporary research-data workflow; isolated to the data-fetch branch.
 on:
   push:
     branches:
