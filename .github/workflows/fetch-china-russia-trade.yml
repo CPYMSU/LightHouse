@@ -8,6 +8,10 @@ on:
     paths:
       - tmp/fetch_china_russia_trade.py
       - .github/workflows/fetch-china-russia-trade.yml
+  pull_request:
+    paths:
+      - tmp/fetch_china_russia_trade.py
+      - .github/workflows/fetch-china-russia-trade.yml
   workflow_dispatch:
 
 permissions:
