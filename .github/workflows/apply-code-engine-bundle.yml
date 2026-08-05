@@ -22,8 +22,8 @@ jobs:
           from pathlib import Path
           import base64, hashlib, io, tarfile
           parts = sorted(Path('.').glob('.code-engine-bundle.part-*'))
-          if len(parts) != 10:
-              raise SystemExit(f'expected 10 bundle parts, found {len(parts)}')
+          if len(parts) != 13:
+              raise SystemExit(f'expected 13 bundle parts, found {len(parts)}')
           encoded = ''.join(part.read_text(encoding='ascii') for part in parts)
           payload = base64.b64decode(encoded, validate=True)
           digest = hashlib.sha256(payload).hexdigest()
