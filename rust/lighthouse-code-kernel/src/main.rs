@@ -91,7 +91,10 @@ impl KernelError {
 impl std::fmt::Display for KernelError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::Invalid(value) | Self::Policy(value) | Self::Io(value) | Self::NotFound(value) => {
+            Self::Invalid(value)
+            | Self::Policy(value)
+            | Self::Io(value)
+            | Self::NotFound(value) => {
                 write!(f, "{value}")
             }
         }
@@ -167,13 +170,7 @@ impl Kernel {
             .clamp(1_000, 3_600_000);
         let rows = object.get("rows").and_then(Value::as_u64).unwrap_or(24) as u16;
         let cols = object.get("cols").and_then(Value::as_u64).unwrap_or(120) as u16;
-        let wrapped = sandbox_command(
-            &command,
-            &cwd,
-            policy,
-            &writable_roots,
-            network_access,
-        )?;
+        let wrapped = sandbox_command(&command, &cwd, policy, &writable_roots, network_access)?;
 
         let pty_system = native_pty_system();
         let pair = pty_system
@@ -247,7 +244,10 @@ impl Kernel {
             .get("data")
             .and_then(Value::as_str)
             .ok_or_else(|| KernelError::Invalid("data must be a string".into()))?;
-        let close = params.get("close").and_then(Value::as_bool).unwrap_or(false);
+        let close = params
+            .get("close")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
         let handle = self
             .processes
             .lock()
@@ -351,7 +351,9 @@ fn canonical_directory(value: Option<&Value>) -> Result<PathBuf, KernelError> {
         .ok_or_else(|| KernelError::Invalid("cwd must be an absolute directory".into()))?;
     let path = Path::new(raw);
     if !path.is_absolute() || raw.contains('\0') {
-        return Err(KernelError::Invalid("cwd must be an absolute directory".into()));
+        return Err(KernelError::Invalid(
+            "cwd must be an absolute directory".into(),
+        ));
     }
     path.canonicalize()
         .map_err(|error| KernelError::Io(format!("cannot resolve cwd: {error}")))
@@ -437,9 +439,8 @@ fn sandbox_command(
                         "sandbox-exec is required for macOS sandboxed execution".into(),
                     ));
                 }
-                let mut profile = String::from(
-                    "(version 1)(deny default)(allow process*)(allow file-read*)",
-                );
+                let mut profile =
+                    String::from("(version 1)(deny default)(allow process*)(allow file-read*)");
                 if network_access {
                     profile.push_str("(allow network*)");
                 }
@@ -451,10 +452,7 @@ fn sandbox_command(
                     };
                     for root in roots {
                         let escaped = root.replace('\\', "\\\\").replace('"', "\\\"");
-                        profile.push_str(&format!(
-                            "(allow file-write* (subpath \"{}\"))",
-                            escaped
-                        ));
+                        profile.push_str(&format!("(allow file-write* (subpath \"{}\"))", escaped));
                     }
                 }
                 let mut value = vec!["sandbox-exec".into(), "-p".into(), profile, "--".into()];
@@ -464,7 +462,8 @@ fn sandbox_command(
             #[cfg(target_os = "windows")]
             {
                 Err(KernelError::Policy(
-                    "Windows Restricted Token sandbox adapter is not available in this build".into(),
+                    "Windows Restricted Token sandbox adapter is not available in this build"
+                        .into(),
                 ))
             }
             #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
@@ -568,7 +567,9 @@ fn main() {
         let line = match line {
             Ok(value) => value,
             Err(error) => {
-                kernel.output.emit(json!({"error": {"code": "io_error", "message": error.to_string()}}));
+                kernel
+                    .output
+                    .emit(json!({"error": {"code": "io_error", "message": error.to_string()}}));
                 break;
             }
         };
@@ -596,8 +597,7 @@ mod tests {
     fn danger_mode_preserves_command() {
         let command = vec!["echo".into(), "ok".into()];
         assert_eq!(
-            sandbox_command(&command, Path::new("/tmp"), "dangerFullAccess", &[], false)
-                .unwrap(),
+            sandbox_command(&command, Path::new("/tmp"), "dangerFullAccess", &[], false).unwrap(),
             command
         );
     }
