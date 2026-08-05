@@ -1,0 +1,24 @@
+name: Rust Code Kernel
+
+on:
+  pull_request:
+  push:
+    branches: [main, "feat/**", "agent/**"]
+
+jobs:
+  kernel:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: rust/lighthouse-code-kernel
+      - name: Format contract
+        run: cargo fmt --manifest-path rust/lighthouse-code-kernel/Cargo.toml -- --check
+      - name: Compile and test
+        run: cargo test --manifest-path rust/lighthouse-code-kernel/Cargo.toml
