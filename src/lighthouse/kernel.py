@@ -17,17 +17,56 @@ class OperationKernel:
         *,
         target_resolver: Any | None = None,
         data_catalog: Any | None = None,
+        run_policy_resolver: Any | None = None,
     ):
         self.repository = repository
         self.registry = registry
         self.executors = dict(executors)
         self.target_resolver = target_resolver
         self.data_catalog = data_catalog
+        self.run_policy_resolver = run_policy_resolver
+
+    @staticmethod
+    def _source_run_id(idempotency_key: str | None) -> str | None:
+        """Recover the durable Agent Run binding without trusting tool arguments."""
+        value = str(idempotency_key or "")
+        if not value.startswith("agent:"):
+            return None
+        parts = value.split(":", 3)
+        return parts[1] if len(parts) >= 3 and parts[1] else None
+
+    def _run_policy(
+        self,
+        *,
+        source_run_id: str | None,
+        capability,
+    ) -> dict[str, Any] | None:
+        resolver = self.run_policy_resolver
+        if not source_run_id or not callable(resolver):
+            return None
+        policy = resolver(source_run_id)
+        if not isinstance(policy, dict):
+            return None
+        if str(policy.get("status") or "").lower() == "cancelled":
+            raise PermissionError("Warehouse federation Run was cancelled")
+        read_only = str(policy.get("mode") or "").lower() == "read_only"
+        writes_disabled = policy.get("allow_local_write") is False
+        if capability.writes and (read_only or writes_disabled):
+            raise PermissionError(
+                "Warehouse federation read-only policy blocks local write capability "
+                f"{capability.tool_name}"
+            )
+        return policy
 
     def submit(self, request: OperationRequest) -> dict[str, Any]:
         capability = self.registry.get(request.capability)
         if request.mode not in {KernelMode.AUTO, capability.kernel}:
             raise ValueError(f"capability requires {capability.kernel.value} mode")
+        source_run_id = self._source_run_id(request.idempotency_key)
+        run_policy = self._run_policy(
+            source_run_id=source_run_id,
+            capability=capability,
+        )
         workspace = self.repository.get_workspace(request.workspace_id)
         if self.target_resolver is not None:
             target_id = self.target_resolver.resolve(workspace, capability.kernel, request.arguments)
@@ -48,6 +87,15 @@ class OperationKernel:
         if target.kind != expected_kind:
             raise ValueError("workspace target kind does not match capability kernel")
         envelope = request.envelope(target_id=target.id, capability=capability)
+        if source_run_id:
+            envelope["source_run_id"] = source_run_id
+        if run_policy:
+            envelope["run_policy"] = {
+                "mode": run_policy.get("mode"),
+                "allow_local_write": run_policy.get("allow_local_write"),
+                "source": run_policy.get("source"),
+                "remote_run_id": run_policy.get("remote_run_id"),
+            }
         operation = self.repository.create_operation(
             operation_id=request.operation_id,
             workspace_id=workspace.id,

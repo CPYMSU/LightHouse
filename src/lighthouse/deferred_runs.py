@@ -28,6 +28,8 @@ class DeferredRunScheduler:
         conversation_id: str | None = None,
         new_conversation: bool = False,
         work_intensity: str = "balanced",
+        run_id: str | None = None,
+        launch: bool = True,
     ) -> dict[str, Any]:
         memory = getattr(self.runtime, "memory", None)
         if memory is None:
@@ -41,7 +43,7 @@ class DeferredRunScheduler:
         policy = resolve_intensity(work_intensity)
         requested = policy.initial_main_steps if max_steps is None else int(max_steps)
         seed_steps = min(64, max(1, requested, min(policy.initial_main_steps, 64)))
-        run_id = str(uuid4())
+        resolved_run_id = str(run_id or uuid4())
         conversation = memory.ensure_conversation(
             workspace_id=workspace_id,
             actor=actor,
@@ -50,7 +52,7 @@ class DeferredRunScheduler:
             title=task[:120],
         )
         run = self.runtime.repository.create_agent_run(
-            run_id=run_id,
+            run_id=resolved_run_id,
             task=task,
             workspace_id=workspace_id,
             actor=actor,
@@ -92,7 +94,8 @@ class DeferredRunScheduler:
             conversation_id=conversation["id"],
             goal=task,
         )
-        self.launch(run.id)
+        if launch:
+            self.launch(run.id)
         return self.runtime.snapshot(run.id)
 
     def advance(self, run_id: str) -> dict[str, Any]:

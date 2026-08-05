@@ -8,6 +8,7 @@ import sys
 
 from . import terminal as base_terminal
 from . import terminal_entry
+from .config import Settings
 from .instances import (
     InstanceError,
     create_instance,
@@ -15,6 +16,12 @@ from .instances import (
     list_instances,
     start_instance,
     stop_instance,
+)
+from .warehouse_federation import (
+    WarehouseFederationError,
+    disable_warehouse_federation,
+    pair_warehouse_device,
+    warehouse_federation_status,
 )
 
 
@@ -30,20 +37,33 @@ def _instance_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _warehouse_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        prog="lh warehouse",
+        description="Pair and inspect Warehouse OS 2.1 federation",
+    )
+    subparsers = parser.add_subparsers(dest="command", required=True)
+    pair = subparsers.add_parser("pair", help="pair this LightHouse instance")
+    pair.add_argument("origin", help="Warehouse HTTPS origin")
+    pair.add_argument("pairing_code", help="one-time Warehouse pairing code")
+    pair.add_argument("--label", default="LightHouse")
+    pair.add_argument("--workspace", dest="workspace_id")
+    subparsers.add_parser("status", help="show local federation configuration")
+    subparsers.add_parser("disconnect", help="remove the local device credential")
+    return parser
+
+
 def _activate(config_path: Path) -> None:
     os.environ["LIGHTHOUSE_CONFIG"] = str(config_path)
 
 
-def _print_instances() -> int:
-    print(
-        json.dumps(
-            {"items": [record.public() for record in list_instances()]},
-            ensure_ascii=False,
-            indent=2,
-            sort_keys=True,
-        )
-    )
+def _print_json(value: object) -> int:
+    print(json.dumps(value, ensure_ascii=False, indent=2, sort_keys=True, default=str))
     return 0
+
+
+def _print_instances() -> int:
+    return _print_json({"items": [record.public() for record in list_instances()]})
 
 
 def _new(argv: list[str]) -> int:
@@ -53,16 +73,11 @@ def _new(argv: list[str]) -> int:
         project_path=args.project,
         preferred_port=args.port,
     )
-    print(
-        json.dumps(
-            {
-                "instance": record.public(),
-                "message": "LightHouse instance started",
-            },
-            ensure_ascii=False,
-            indent=2,
-            sort_keys=True,
-        )
+    _print_json(
+        {
+            "instance": record.public(),
+            "message": "LightHouse instance started",
+        }
     )
     if args.no_attach:
         return 0
@@ -70,6 +85,26 @@ def _new(argv: list[str]) -> int:
     if args.project:
         os.chdir(Path(args.project).expanduser().resolve())
     return terminal_entry.main([])
+
+
+def _warehouse(argv: list[str]) -> int:
+    args = _warehouse_parser().parse_args(argv)
+    if args.command == "status":
+        return _print_json(warehouse_federation_status())
+    if args.command == "disconnect":
+        return _print_json(disable_warehouse_federation())
+    settings = Settings.from_env()
+    result = pair_warehouse_device(
+        origin=args.origin,
+        pairing_code=args.pairing_code,
+        instance_id=settings.instance_id,
+        label=args.label,
+        workspace_id=args.workspace_id,
+    )
+    result["connection"] = (
+        "The running LightHouse service detects the new credential automatically."
+    )
+    return _print_json(result)
 
 
 def _attach(name: str, remaining: list[str]) -> int:
@@ -89,6 +124,11 @@ Instance Kernel:
   lh stop NAME                                  stop an instance
   lh start NAME                                 restart a stopped instance
   lh --instance NAME [COMMAND]                  run against a named instance
+
+Warehouse Federation:
+  lh warehouse pair ORIGIN CODE [--workspace ID] [--label NAME]
+  lh warehouse status
+  lh warehouse disconnect
 """
     )
     return 0
@@ -108,6 +148,8 @@ def main(argv: list[str] | None = None) -> int:
             return _help()
         if first == "new":
             return _new(argv[1:])
+        if first == "warehouse":
+            return _warehouse(argv[1:])
         if first in {"instances", "instance-list"}:
             return _print_instances()
         if first in {"attach", "instance-use"}:
@@ -118,30 +160,14 @@ def main(argv: list[str] | None = None) -> int:
             if len(argv) != 2:
                 raise InstanceError(f"{first} requires exactly one instance name")
             record = stop_instance(argv[1])
-            print(
-                json.dumps(
-                    {"instance": record.public()},
-                    ensure_ascii=False,
-                    indent=2,
-                    sort_keys=True,
-                )
-            )
-            return 0
+            return _print_json({"instance": record.public()})
         if first in {"start", "instance-start"}:
             if len(argv) != 2:
                 raise InstanceError(f"{first} requires exactly one instance name")
             record = start_instance(argv[1])
-            print(
-                json.dumps(
-                    {"instance": record.public()},
-                    ensure_ascii=False,
-                    indent=2,
-                    sort_keys=True,
-                )
-            )
-            return 0
+            return _print_json({"instance": record.public()})
         return terminal_entry.main(argv)
-    except InstanceError as exc:
+    except (InstanceError, WarehouseFederationError) as exc:
         base_terminal.SwissTerminal().error(str(exc))
         return 2
 
