@@ -8,6 +8,7 @@ import sys
 
 from . import terminal as base_terminal
 from . import terminal_entry
+from .codex_engine.terminal import main as code_engine_main
 from .config import Settings
 from .instances import (
     InstanceError,
@@ -125,6 +126,12 @@ Instance Kernel:
   lh start NAME                                 restart a stopped instance
   lh --instance NAME [COMMAND]                  run against a named instance
 
+Code Engine:
+  lh code doctor                                inspect Codex and Rust kernel availability
+  lh code run "TASK"                            run one Codex-compatible coding turn
+  lh code interactive                           open the coding REPL
+  lh code evaluate FIXTURE.json                 inspect the evaluation matrix
+
 Warehouse Federation:
   lh warehouse pair ORIGIN CODE [--workspace ID] [--label NAME]
   lh warehouse status
@@ -148,6 +155,8 @@ def main(argv: list[str] | None = None) -> int:
             return _help()
         if first == "new":
             return _new(argv[1:])
+        if first == "code":
+            return code_engine_main(argv[1:])
         if first == "warehouse":
             return _warehouse(argv[1:])
         if first in {"instances", "instance-list"}:

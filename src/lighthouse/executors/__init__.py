@@ -11,6 +11,7 @@ from .mega_project import MegaProjectExecutor
 from .postgres import PostgresExecutor
 from .project_file import ProjectFileExecutor
 from .research import ResearchExecutor
+from .rust_system import RustBackedSystemExecutor
 from .system import SystemExecutor as PosixSystemExecutor
 from .windows_system import WindowsSystemExecutor
 
@@ -23,8 +24,14 @@ class SystemExecutor:
         *,
         posix: PosixSystemExecutor | None = None,
         windows: WindowsSystemExecutor | None = None,
+        rust_kernel_binary: str | None = None,
     ) -> None:
-        self.posix = posix or PosixSystemExecutor()
+        base_posix = posix or PosixSystemExecutor()
+        self.posix = (
+            RustBackedSystemExecutor(binary=rust_kernel_binary, fallback=base_posix)
+            if rust_kernel_binary
+            else base_posix
+        )
         self.windows = windows or WindowsSystemExecutor()
 
     def execute(
@@ -47,6 +54,7 @@ __all__ = [
     "PostgresExecutor",
     "ProjectFileExecutor",
     "ResearchExecutor",
+    "RustBackedSystemExecutor",
     "SystemExecutor",
     "PosixSystemExecutor",
     "WindowsSystemExecutor",

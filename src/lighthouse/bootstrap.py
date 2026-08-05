@@ -122,7 +122,9 @@ def build_kernel(settings: Settings, *, migrate: bool = True) -> OperationKernel
         registry,
         {
             "postgres": PostgresExecutor(catalog),
-            "system": SystemExecutor(),
+            "system": SystemExecutor(
+                rust_kernel_binary=settings.rust_kernel_binary or None,
+            ),
             "project_file": ProjectFileExecutor(),
             "desktop": DesktopExecutor(),
             "agent_bus": agent_bus_executor,
@@ -215,6 +217,11 @@ def build_brain(settings: Settings, kernel: OperationKernel) -> MegaProjectLight
     brain.mega_projects = project_store
     brain.massive_build = massive_build
     brain.code_foundry_mode = settings.code_foundry_mode
+    brain.code_engine_mode = settings.code_engine_mode
+    brain.codex_binary = settings.codex_binary
+    brain.codex_model = settings.codex_model
+    brain.codex_network_access = settings.codex_network_access
+    brain.rust_kernel_binary = settings.rust_kernel_binary
 
     try:
         requested_workers = int(os.getenv("LIGHTHOUSE_AGENT_WORKERS", "8"))

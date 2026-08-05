@@ -18,7 +18,6 @@ dependencies = [
   "uvicorn>=0.30,<1",
   "rich>=13.9,<14",
   "prompt-toolkit>=3.0.48,<4",
-  "websockets>=13,<16",
 ]
 
 [project.optional-dependencies]
@@ -27,6 +26,7 @@ dev = ["pytest>=8,<9"]
 [project.scripts]
 lh = "lighthouse.instance_entry:main"
 lighthouse-api = "lighthouse.server:main"
+lighthouse-code = "lighthouse.codex_engine.terminal:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/lighthouse"]
