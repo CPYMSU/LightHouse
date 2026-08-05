@@ -1,0 +1,13 @@
+[package]
+name = "lighthouse-code-kernel"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+description = "Optional native PTY and sandbox sidecar for LightHouse CodeFoundry"
+
+[dependencies]
+parking_lot = "0.12"
+portable-pty = "0.8"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+uuid = { version = "1", features = ["v4", "serde"] }
