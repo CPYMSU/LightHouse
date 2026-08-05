@@ -40,6 +40,9 @@ from .provider import DisabledProvider
 from .repository import PostgresRepository
 from .research_capabilities import RESEARCH_CAPABILITIES
 from .tool_registry import PostgresToolRegistry
+from .warehouse_federation import warehouse_instance_uuid
+from .warehouse_federation_client import WarehouseFederationWorker
+from .warehouse_federation_store import WarehouseFederationStore
 
 
 class _WorkerGroup:
@@ -68,6 +71,7 @@ def migration_sql() -> str:
             "0008_operation_event_sequence.sql",
             "0009_persistent_emergent_personality.sql",
             "0010_memory_resolution_layers.sql",
+            "0011_warehouse_federation.sql",
         )
     )
 
@@ -84,6 +88,7 @@ def build_kernel(settings: Settings, *, migrate: bool = True) -> OperationKernel
     project_store = PostgresMegaProjectStore(settings.database_url)
     massive_build = PostgresMassiveBuildStore(settings.database_url)
     usage_store = PostgresModelUsageStore(settings.database_url)
+    warehouse_federation = WarehouseFederationStore(settings.database_url)
     agent_bus.register_builtin_agents()
     memory.bind_agent_bus(agent_bus)
     context_compiler = MegaProjectContextCompiler(
@@ -130,6 +135,7 @@ def build_kernel(settings: Settings, *, migrate: bool = True) -> OperationKernel
         },
         target_resolver=DataTargetResolver(catalog),
         data_catalog=catalog,
+        run_policy_resolver=warehouse_federation.policy_for_local_run,
     )
     kernel.memory = memory
     kernel.agent_bus = agent_bus
@@ -139,6 +145,7 @@ def build_kernel(settings: Settings, *, migrate: bool = True) -> OperationKernel
     kernel.mega_projects = project_store
     kernel.massive_build = massive_build
     kernel.usage_store = usage_store
+    kernel.warehouse_federation = warehouse_federation
     return kernel
 
 
@@ -181,6 +188,9 @@ def build_brain(settings: Settings, kernel: OperationKernel) -> MegaProjectLight
     massive_build = getattr(
         kernel, "massive_build", None
     ) or PostgresMassiveBuildStore(settings.database_url)
+    warehouse_federation = getattr(
+        kernel, "warehouse_federation", None
+    ) or WarehouseFederationStore(settings.database_url)
     agent_bus.register_builtin_agents()
     memory.bind_agent_bus(agent_bus)
     context_compiler = getattr(
@@ -226,15 +236,25 @@ def build_brain(settings: Settings, kernel: OperationKernel) -> MegaProjectLight
         for _ in range(worker_count)
     ]
     neuron_worker = NeuronReflexWorker(neuron_runtime)
+    warehouse_worker = WarehouseFederationWorker(
+        runtime=brain,
+        repository=kernel.repository,
+        store=warehouse_federation,
+        instance_id=warehouse_instance_uuid(settings.instance_id),
+        instance_name=settings.instance_name,
+    )
     for worker in workers:
         worker.start()
     neuron_worker.start()
-    brain.background_worker = _WorkerGroup(*workers, neuron_worker)
+    warehouse_worker.start()
+    brain.background_worker = _WorkerGroup(*workers, neuron_worker, warehouse_worker)
     brain.memory_worker = workers[0]
     brain.agent_workers = workers
     brain.neuron_runtime = neuron_runtime
     brain.neuron_worker = neuron_worker
     brain.tool_registry = tool_registry
+    brain.warehouse_federation = warehouse_federation
+    brain.warehouse_federation_worker = warehouse_worker
     return brain
 
 
